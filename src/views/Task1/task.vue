@@ -22,7 +22,14 @@
           @change="filterEvents"
         />
       </div>
-      <div class="animation-control" v-if="currentAnimation">
+     <!-- 增强的动画控制面板 -->
+     <div class="animation-control" v-if="currentAnimation">
+        <div class="animation-info">
+          <h4>动画控制</h4>
+          <div>当前事件: #{{ currentAnimation.feature.properties.event_id }}</div>
+          <div>总帧数: {{ currentAnimation.polygons.length }}</div>
+        </div>
+        
         <el-slider
           v-model="animationProgress"
           :min="0"
@@ -30,14 +37,26 @@
           :step="1"
           @change="updateAnimationPosition"
         />
+        
         <el-button-group>
-          <el-button @click="toggleAnimation">
-            {{ isPlaying ? '暂停' : '播放' }}
+          <el-button @click="toggleAnimation" type="primary">
+            {{ isPlaying ? '⏸ 暂停' : '▶️ 播放' }}
           </el-button>
-          <el-button @click="stopAnimation">停止</el-button>
+          <el-button @click="stopAnimation">⏹ 停止</el-button>
+          <el-button @click="restartAnimation">🔄 重播</el-button>
         </el-button-group>
+        
+        <div class="speed-control">
+          <span>播放速度:</span>
+          <el-slider
+            v-model="animationSpeed"
+            :min="0.5"
+            :max="3"
+            :step="0.5"
+            style="width: 200px"
+          />
+        </div>
       </div>
-
     </div>
 
     <!-- 地图容器 -->
@@ -102,6 +121,15 @@ export default {
   const defaultStart = new Date(2020, 6, 1)  // 2020-06-01
   const defaultEnd = new Date(2020, 8, 31)   // 2020-09-30
     return {
+      
+      animationSpeed: 1, 
+      currentAnimation: null,
+      currentHighlight: null, // 新增当前高亮要素的引用
+      isPlaying: false,
+      animationProgress: 0,
+      animationInterval: null,
+      pathLayer: null,
+      markerLayer: null,
       isMapInitialized: false ,// 新增地图初始化状态标记,
       map: null,
       geoJsonLayer: null,
@@ -135,8 +163,122 @@ export default {
       }
     },
   methods: {
+        // 添加 toggleAnimation 方法
+        toggleAnimation() {
+      this.isPlaying = !this.isPlaying;
+      if (this.isPlaying) {
+        this.playNextStep();
+      } else {
+        clearInterval(this.animationInterval);
+      }
+    },
+   // 新增动画相关方法
+   showMovementAnimation(feature) {
+      this.clearAnimation();
+      
+      const days = feature.properties.daily_info;
+      if (!days || days.length < 2) return;
 
-  
+      // 存储多边形动画数据
+      const polygons = days.map(day => {
+        try {
+          return L.polygon(day.boundary.coordinates[0], {
+            color: this.getSpeedColor(feature.properties.speed), // 保持原色
+            weight: 2,
+            opacity: 0.8,
+            fillOpacity: 0.2
+          });
+        } catch (e) {
+          console.warn('无效的边界数据:', day.boundary);
+          return null;
+        }
+      }).filter(Boolean);
+
+      // 创建路径和标记（保持原有）
+      const pathPoints = days.map(d => [d.centroid.lat, d.centroid.lon]);
+      this.pathLayer = L.polyline(pathPoints, {
+        color: '#ff0000',
+        weight: 3
+      }).addTo(this.map);
+
+      const marker = L.marker(pathPoints[0], {
+        icon: L.divIcon({
+          className: 'animated-marker',
+          html: '<div class="pulsing-dot"></div>',
+          iconSize: [20, 20]
+        })
+      }).addTo(this.map);
+
+      // 动画状态
+      this.currentAnimation = {
+        feature,
+        currentIndex: 0,
+        polygons,
+        marker,
+        currentPolygon: null
+      };
+
+      // 初始显示第一个多边形
+      if (polygons.length > 0) {
+        this.currentAnimation.currentPolygon = polygons[0].addTo(this.map);
+      }
+
+      this.toggleAnimation();
+    },
+
+    playNextStep() {
+      if (!this.isPlaying) return;
+
+      const anim = this.currentAnimation;
+      const interval = 1000; // 1秒间隔
+
+      this.animationInterval = setInterval(() => {
+        if (anim.currentIndex < anim.polygons.length - 1) {
+          // 移除旧多边形
+          if (anim.currentPolygon) {
+            this.map.removeLayer(anim.currentPolygon);
+          }
+          
+          // 更新索引
+          anim.currentIndex++;
+          
+          // 添加新多边形
+          anim.currentPolygon = anim.polygons[anim.currentIndex].addTo(this.map);
+          
+          // 移动标记
+          const point = anim.feature.properties.daily_info[anim.currentIndex].centroid;
+          anim.marker.setLatLng([point.lat, point.lon]);
+          
+          // 更新进度条
+          this.animationProgress = (anim.currentIndex / (anim.polygons.length - 1)) * 100;
+        } else {
+          this.stopAnimation();
+        }
+      }, interval);
+    },
+   
+  updateMarkerPosition() {
+    const { currentIndex, feature } = this.currentAnimation;
+    const point = feature.properties.daily_info[currentIndex].centroid;
+    this.markerLayer.setLatLng([point.lat, point.lon]);
+  },
+
+  stopAnimation() {
+    this.isPlaying = false;
+    clearInterval(this.animationInterval);
+    this.animationProgress = 0;
+    this.currentAnimation = null;
+  },
+
+  clearAnimation() {
+      if (this.pathLayer) this.map.removeLayer(this.pathLayer);
+      if (this.currentAnimation) {
+        if (this.currentAnimation.marker) this.map.removeLayer(this.currentAnimation.marker);
+        if (this.currentAnimation.currentPolygon) this.map.removeLayer(this.currentAnimation.currentPolygon);
+        this.currentAnimation.polygons?.forEach(p => this.map.removeLayer(p));
+      }
+      this.stopAnimation();
+   },
 
    // 数据加载方法重构
    // 修改后的 loadData 方法
@@ -332,11 +474,43 @@ export default {
           fillOpacity: 0.2
         }),
         onEachFeature: (feature, layer) => {
+
+          
           // 弹窗绑定
           if (feature.properties) {
             layer.bindPopup(this.createPopupContent(feature.properties));
           }
-          
+          //layer.bindPopup(this.createPopupContent(feature.properties));
+          // 保存原始样式
+          const originalStyle = {
+            color: this.getSpeedColor(feature.properties.speed),
+            weight: 2,
+            opacity: 0.8
+          };
+          layer.setStyle(originalStyle);
+  
+          // 保存原始样式到图层属性
+          layer.originalStyle = originalStyle;
+
+          layer.on('click', () => {
+            // 清除上一个高亮
+            if (this.currentHighlight) {
+              this.currentHighlight.setStyle(this.currentHighlight.originalStyle);
+            }
+            
+            // 设置新高亮（使用原始颜色但加粗边框）
+            layer.setStyle({
+              color: layer.originalStyle.color,
+              weight: 5,
+              opacity: 1
+            });
+            
+            // 更新当前高亮引用
+            this.currentHighlight = layer;
+            
+            this.showMovementAnimation(feature);
+          });
+       
           // 轨迹绘制
           // if (feature.properties?.daily_info?.length > 1) {
           //   const path = this.createMovementPath(feature);
@@ -449,6 +623,66 @@ export default {
 </script>
 
 <style scoped>
+/* 添加多边形动画 */
+.leaflet-polygon {
+  transition: opacity 0.5s ease-in-out;
+}
+
+@keyframes trail {
+  from { stroke-dashoffset: 1000; }
+  to { stroke-dashoffset: 0; }
+}
+
+.animated-path {
+  stroke-dasharray: 1000;
+  animation: trail 3s linear infinite;
+}
+
+/* 添加多边形动画效果 */
+.animated-polygon {
+  animation: polygonPulse 2s infinite;
+}
+
+@keyframes polygonPulse {
+  0% { 
+    filter: brightness(1);
+    transform: scale(1);
+  }
+  50% {
+    filter: brightness(1.2);
+    transform: scale(1.02);
+  }
+  100% {
+    filter: brightness(1);
+    transform: scale(1);
+  }
+}
+
+
+.animated-marker .pulsing-dot {
+  width: 20px;
+  height: 20px;
+  background: #ff0000;
+  border-radius: 50%;
+  animation: pulse 1.5s infinite;
+  box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.8); }
+  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255,0,0,0); }
+  100% { transform: scale(0.8); }
+}
+
+/* 控制面板动画控件 */
+.animation-control {
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(255,255,255,0.9);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
 .heatwave-vis {
   height: 100vh;
   display: flex;
