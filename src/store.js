@@ -1,10 +1,11 @@
+// store.js
 import { createStore } from 'vuex';
 
 export default createStore({
   state: {
-    timeRange: null, // 时间范围
-    spatialRegion: null, // 空间区域
-    userHistory: [], // 用户操作历史记录
+    timeRange: null,
+    spatialRegion: null,
+    userHistory: []
   },
   mutations: {
     setTimeRange(state, range) {
@@ -14,18 +15,29 @@ export default createStore({
       state.spatialRegion = region;
     },
     addUserHistory(state, action) {
-      state.userHistory.push(action);
-    },
+      state.userHistory.push({
+        ...action,
+        timestamp: new Date().toISOString()
+      });
+    }
   },
   actions: {
     updateTimeRange({ commit }, range) {
       commit('setTimeRange', range);
+      commit('addUserHistory', {
+        type: 'TIME_RANGE_CHANGE',
+        value: range
+      });
     },
     updateSpatialRegion({ commit }, region) {
       commit('setSpatialRegion', region);
     },
     logUserAction({ commit }, action) {
       commit('addUserHistory', action);
-    },
+    }
   },
+  getters: {
+    getTimeRange: state => state.timeRange,
+    getUserHistory: state => state.userHistory
+  }
 });
