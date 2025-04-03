@@ -1,6 +1,7 @@
 <template>
   <div>
-    <el-menu mode="horizontal" :default-active="activeIndex" @select="handleSelect">
+    <el-menu mode="horizontal" :default-active="activeIndex" @select="handleSelect"
+    style="height: 80px">
       <el-menu-item index="1" @click="goToTask1">时空分析</el-menu-item>
       <el-menu-item index="2" @click="goToTask2">统计分析</el-menu-item>
       <el-menu-item index="3" @click="goToTask3">关联分析</el-menu-item>
