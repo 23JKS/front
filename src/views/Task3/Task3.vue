@@ -44,7 +44,37 @@
 </template>
 
 <script>
-import * as echarts from 'echarts'
+// 替换原有import语句
+import * as echarts from 'echarts/core'
+import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
+import {
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  DatasetComponent,
+  TransformComponent,
+  LegendComponent
+} from 'echarts/components'
+import { LabelLayout, UniversalTransition } from 'echarts/features'
+import { CanvasRenderer } from 'echarts/renderers'
+
+// 注册必要组件
+echarts.use([
+  BarChart,
+  LineChart,
+  PieChart,
+  ScatterChart,
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  DatasetComponent,
+  TransformComponent,
+  LegendComponent,
+  LabelLayout,
+  UniversalTransition,
+  CanvasRenderer
+])
+
 import Papa from 'papaparse'
 import mitt from 'mitt'  // 新增事件总线
 
@@ -78,12 +108,17 @@ export default {
   methods: {
     async loadCSVData() {
       try {
+        console.log('开始加载CSV数据')
         const startTime = Date.now()
         const response = await fetch('/data/eventually_heatwave.csv')
+          // 添加路径验证
+        console.log('请求URL:', response.url) 
+        console.log('响应状态:', response.status)
         
         if (!response.ok) throw new Error(`HTTP错误 ${response.status}`)
         
         const csvText = await response.text()
+        console.log('原始数据长度:', csvText.length)
         
         Papa.parse(csvText, {
           header: true,
@@ -99,6 +134,20 @@ export default {
           complete: (results) => {
             console.log(`数据解析完成，耗时 ${Date.now() - startTime}ms`)
             this.eventsData = this.cleanData(results.data)
+           
+             // 修正后的双重 nextTick
+            this.$nextTick(() => {
+              this.$nextTick(() => {
+                this.initCharts()
+                this.loading = false
+              })
+            })
+            console.log('清洗后的数据:', this.eventsData)
+             // 添加数据验证
+            if (this.eventsData.length === 0) {
+              this.handleError('数据验证失败', new Error('清洗后数据为空'))
+              return
+            }
             this.initCharts()
             this.loading = false
           },
@@ -116,7 +165,7 @@ export default {
         .map(item => ({
           id: item.event_id,
           duration: Number(item.duration),
-          maxAnomaly: Number(item.max_anomaly),
+          maxAnomaly: Number(item.max_anomaly) || 0, // 确保数值有效,
           startDate: item.start_date,
           endDate: item.end_date,
           vortexRatio: Number(item.vortex_coverage_ratio),
@@ -127,14 +176,25 @@ export default {
           !isNaN(item.duration) && 
           !isNaN(item.maxAnomaly) &&
           item.startDate instanceof Date &&
-          item.endDate instanceof Date
-        )
+          item.endDate instanceof Date  &&  typeof item.maxAnomaly === 'number')
         .sort((a, b) => a.startDate - b.startDate)
     },
 
     initCharts() {
+      //打印调试信息
+      console.log('开始初始化图表')
+      // 验证DOM元素
+      console.log('图表容器验证:')
+      console.log('Duration Chart DOM:', this.$refs.durationChart)
+      console.log('Anomaly Chart DOM:', this.$refs.anomalyChart)
+
+
       // 确保DOM更新完成
       this.$nextTick(() => {
+        console.log('DOM更新完成')
+
+
+    
         // 持续时间直方图
         this.createChart(this.$refs.durationChart, {
           tooltip: {
@@ -259,9 +319,15 @@ export default {
           yAxis: { type: 'value', name: '异常值' },
           series: [{
             type: 'scatter',
-            symbolSize: d => Math.sqrt(d.value[1]) * 8,
-            data: this.eventsData.map(d => ({
-              value: [d.startDate, d.maxAnomaly],
+            symbolSize: d => {
+              // 添加多重保护
+              const value = d.value ? d.value[1] : 0
+              return Math.sqrt(value || 0) * 8
+            },
+            data: this.eventsData
+            .filter(d => d.maxAnomaly) // 过滤无效数据
+            .map(d => ({
+              value: [d.startDate, d.maxAnomaly || 0], // 确保数值存在
               name: `事件#${d.id}`,
               date: d.startDate.toLocaleDateString(),
               duration: d.duration
@@ -282,7 +348,10 @@ export default {
     },
 
     createChart(el, option) {
-      if (!el) return
+      if (!el) {
+        console.error('图表容器不存在')
+        return
+      }
       
       const chart = echarts.init(el)
       chart.setOption({
@@ -296,9 +365,9 @@ export default {
         ...option
       })
       
-      this.chartInstances.push(chart)
+      
        // 使用事件总线替代$once
-       const resizeHandler = () => chart.resize();
+      const resizeHandler = () => chart.resize();
       emitter.on('window-resize', resizeHandler);
 
       // 存储图表实例和对应的处理器
@@ -314,13 +383,14 @@ export default {
       this.loading = false
     },
     handleResize() {
-    emitter.emit('window-resize'); // 触发全局resize事件
+      emitter.emit('window-resize'); // 触发全局resize事件
     }
   }
 }
 </script>
 
 <style scoped>
+
 .dashboard-container {
   padding: 2rem;
   max-width: 1400px;

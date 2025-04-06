@@ -2,6 +2,34 @@
   <div class="heatwave-vis">
     <!-- 控制面板 -->
     <div class="control-panel">
+
+      <div class="heatmap-control">
+        <el-tooltip content="基于事件密度生成热力图" placement="top">
+          <el-switch
+            v-model="showHeatmap"
+            active-text="热力图"
+            @change="toggleHeatmap"
+          />
+        </el-tooltip>
+        
+        <div v-if="showHeatmap" class="heatmap-options">
+          <el-radio-group v-model="heatmapType" size="small">
+            <el-radio-button label="density">事件密度</el-radio-button>
+            <el-radio-button label="intensity">强度分布</el-radio-button>
+          </el-radio-group>
+          
+          <el-slider
+            v-model="heatmapRadius"
+            :min="10"
+            :max="50"
+            :step="5"
+            label="热力半径"
+            @change="updateHeatmap"
+          />
+        </div>
+      </div>
+
+
       <el-date-picker
         v-model="timeRange"
         type="daterange"
@@ -44,32 +72,32 @@
           @change="filterEvents"
         />
       </div>
-
-      <div class="animation-control" v-if="currentAnimation">
-        <el-slider
-          v-model="animationProgress"
-          :min="0"
-          :max="100"
-          :step="1"
-          @change="updateAnimationPosition"
-        />
-        <el-button-group>
-          <el-button @click="toggleAnimation">
-            {{ isPlaying ? '暂停' : '播放' }}
-          </el-button>
-          <el-button @click="stopAnimation">停止</el-button>
-        </el-button-group>
-      </div>
     </div>
 
     <!-- 地图容器 -->
     <div id="map-container"></div>
 
-    <!-- 强度图例 -->
-    <div class="legend intensity-legend">
-      <div v-for="(item, index) in intensityRanges" :key="index" class="legend-item">
-        <div class="color-box" :style="{ backgroundColor: item.color }"></div>
-        <span>{{ item.label }}</span>
+    <!-- 在模板部分修改图例部分 -->
+    <div class="legend-container">
+      <!-- 强度图例只在非热力图模式显示 -->
+      <div v-if="!showHeatmap" class="legend intensity-legend">
+        <h4>事件强度</h4>
+        <div v-for="(item, index) in intensityRanges" :key="index" class="legend-item">
+          <div class="color-box" :style="{ backgroundColor: item.color }"></div>
+          <span>{{ item.label }}</span>
+        </div>
+      </div>
+
+      <!-- 热力图例单独显示 -->
+      <div v-if="showHeatmap" class="legend heat-legend">
+        <h4>{{ heatLegendTitle }}</h4>
+        <div class="legend-scale">
+          <div class="gradient-bar"></div>
+          <div class="scale-labels">
+            <span>低</span>
+            <span>高</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -78,7 +106,7 @@
 <script>
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-
+import 'leaflet.heat/dist/leaflet-heat.js';
 const GeoJSONFixer = {
   preprocess(str) {
     return str
@@ -87,7 +115,7 @@ const GeoJSONFixer = {
       .replace(/(\w+):/g, '"$1":')
       .replace(/(\d+\.\d+),\s*]/g, '$1]')
       .replace(/,(\s*[\]}])/g, '$1')
-      .replace(/\(/g, '[').replace(/\)/g, ']')
+      .replace(/$/g, '[').replace(/$/g, ']')
       .replace(/(\d+),]/g, '$1]');
   },
 
@@ -96,33 +124,37 @@ const GeoJSONFixer = {
       return JSON.parse(str);
     } catch (e) {
       const fixed = str
-        .replace(/(\[[^[]+?)([,\]]*)$/g, '$1]')
+        .replace(/($$[^[]+?)([,$$]*)$/g, '$1]')
         .replace(/},]/g, '}]');
       return JSON.parse(fixed);
     }
   }
 };
 
-// 强度颜色映射
 const INTENSITY_COLORS = {
-  low: '#4CAF50',    // 绿色 - 低强度
-  medium: '#FFC107', // 黄色 - 中等强度
-  high: '#F44336'    // 红色 - 高强度
+  low: '#4CAF50',
+  medium: '#FFC107',
+  high: '#F44336'
 };
 
 export default {
   name: 'HeatwaveVisualization',
   data() {
-    const defaultStart = new Date(2020, 6, 1);
-    const defaultEnd = new Date(2020, 8, 31);
+    const defaultStart = new Date(2020, 5, 1);
+    const defaultEnd = new Date(2020, 7, 31);
     return {
-      currentAnimation: null,
+         // 新增热力图相关数据
+      showHeatmap: false,
+      heatLayer: null,
+      heatmapType: 'density', // density｜intensity
+      heatmapRadius: 25,
+      heatmapGradient: {
+        0.4: 'blue',
+        0.6: 'lime',
+        0.9: 'red'
+      },
+
       currentHighlight: null,
-      isPlaying: false,
-      animationProgress: 0,
-      animationInterval: null,
-      pathLayer: null,
-      markerLayer: null,
       isMapInitialized: false,
       map: null,
       geoJsonLayer: null,
@@ -131,8 +163,8 @@ export default {
         defaultEnd.toISOString().split('T')[0]
       ],
       minDuration: 3,
-      minCumulativeIntensity: 100, // 默认最小累计强度
-      minMaxIntensity: 1,         // 默认最小最大强度
+      minCumulativeIntensity: 100,
+      minMaxIntensity: 1,
       allEvents: [],
       filteredEvents: [],
       intensityRanges: [
@@ -144,115 +176,119 @@ export default {
   },
   
   async mounted() {
-    try {
-      this.initMap();
-      await this.loadData();
-      this.filterEvents();
-    } catch (error) {
-      console.error('初始化失败:', error);
+  try {
+    await this.initHeatPlugin();
+    this.initMap();
+    await this.loadData();
+    this.filterEvents();
+  } catch (error) {
+    console.error('初始化失败:', error);
+  }
+  },
+  computed: {
+    heatLegendTitle() {
+      return this.heatmapType === 'density' 
+        ? '事件密度热力分布' 
+        : '强度分布热力图';
     }
   },
-  
   methods: {
-    toggleAnimation() {
-      this.isPlaying = !this.isPlaying;
-      if (this.isPlaying) {
-        this.playNextStep();
-      } else {
-        clearInterval(this.animationInterval);
+    async initHeatPlugin() {
+      if (typeof window !== 'undefined') {
+        await import('leaflet.heat/dist/leaflet-heat.js');
       }
+    },
+    // 生成热力图数据点
+    generateHeatmapData() {
+      return this.filteredEvents.flatMap(event => {
+        const baseIntensity = event.properties.cumulative_intensity;
+        return event.properties.daily_info.map(day => {
+          const weight = this.heatmapType === 'intensity' 
+            ? day.intensity / baseIntensity
+            : 1;
+            
+          return [
+            day.centroid.lat,
+            day.centroid.lon,
+            weight * 0.5 // 强度权重系数
+          ];
+        });
+      });
     },
     
-    showMovementAnimation(feature) {
-      this.clearAnimation();
+     // 切换热力图显示
+    // 修改后的切换热力图方法
+    toggleHeatmap() {
+      if (this.showHeatmap) {
+        // 移除原有热浪多边形
+        if (this.geoJsonLayer) {
+          this.map.removeLayer(this.geoJsonLayer);
+          this.geoJsonLayer = null;
+        }
+
+        const points = this.generateHeatmapData();
+        this.heatLayer = L.heatLayer(points, {
+          radius: this.heatmapRadius,
+          blur: 15,
+          gradient: this.heatmapGradient,
+          maxZoom: 9
+        }).addTo(this.map);
+        this.addHeatLegend();
+      } else {
+        // 关闭热力图时重新渲染多边形
+        this.heatLayer?.remove();
+        this.heatLayer = null;
+        this.removeHeatLegend();
+        this.renderEvents(); // 重新显示热浪多边形
+      }
+    },
+
+     // 更新热力图参数
+     updateHeatmap() {
+      if (this.heatLayer) {
+        this.heatLayer.setOptions({
+          radius: this.heatmapRadius,
+          gradient: this.heatmapGradient
+        });
+        this.heatLayer.redraw();
+      }
+    },
+
+    // 修改addHeatLegend方法
+    addHeatLegend() {
+      this.removeHeatLegend(); // 先移除旧图例
       
-      const days = feature.properties.daily_info;
-      if (!days || days.length < 2) return;
-
-      const polygons = days.map(day => {
-        try {
-          return L.polygon(day.boundary.coordinates[0], {
-            color: this.getIntensityColor(feature.properties.cumulative_intensity),
-            weight: 2,
-            opacity: 0.8,
-            fillOpacity: 0.2
-          });
-        } catch (e) {
-          console.warn('无效的边界数据:', day.boundary);
-          return null;
-        }
-      }).filter(Boolean);
-
-      const pathPoints = days.map(d => [d.centroid.lat, d.centroid.lon]);
-      this.pathLayer = L.polyline(pathPoints, {
-        color: '#ff0000',
-        weight: 3
-      }).addTo(this.map);
-
-      const marker = L.marker(pathPoints[0], {
-        icon: L.divIcon({
-          className: 'animated-marker',
-          html: '<div class="pulsing-dot"></div>',
-          iconSize: [20, 20]
-        })
-      }).addTo(this.map);
-
-      this.currentAnimation = {
-        feature,
-        currentIndex: 0,
-        polygons,
-        marker,
-        currentPolygon: null
+      this.heatLegend = L.control({ position: 'bottomleft' });
+      
+      this.heatLegend.onAdd = () => {
+        const div = L.DomUtil.create('div', 'heat-legend');
+        div.innerHTML = `
+          <h4>${this.heatLegendTitle}</h4>
+          <div class="legend-scale">
+            <div style="background:linear-gradient(to right, 
+              ${this.heatmapGradient[0.4]}, 
+              ${this.heatmapGradient[0.6]}, 
+              ${this.heatmapGradient[0.9]})"></div>
+            <span>低</span><span>高</span>
+          </div>
+        `;
+        return div;
       };
-
-      if (polygons.length > 0) {
-        this.currentAnimation.currentPolygon = polygons[0].addTo(this.map);
-      }
-
-      this.toggleAnimation();
+      
+      this.heatLegend.addTo(this.map);
     },
-
-    playNextStep() {
-      if (!this.isPlaying) return;
-
-      const anim = this.currentAnimation;
-      const interval = 1000;
-
-      this.animationInterval = setInterval(() => {
-        if (anim.currentIndex < anim.polygons.length - 1) {
-          if (anim.currentPolygon) {
-            this.map.removeLayer(anim.currentPolygon);
-          }
-          
-          anim.currentIndex++;
-          anim.currentPolygon = anim.polygons[anim.currentIndex].addTo(this.map);
-          
-          const point = anim.feature.properties.daily_info[anim.currentIndex].centroid;
-          anim.marker.setLatLng([point.lat, point.lon]);
-          this.animationProgress = (anim.currentIndex / (anim.polygons.length - 1)) * 100;
-        } else {
-          this.stopAnimation();
+    // 添加watch监听
+    watch: {
+      heatmapType() {
+        if (this.showHeatmap) {
+          this.addHeatLegend(); // 切换类型时更新图例
         }
-      }, interval);
-    },
-   
-    stopAnimation() {
-      this.isPlaying = false;
-      clearInterval(this.animationInterval);
-      this.animationProgress = 0;
-      this.currentAnimation = null;
-    },
-
-    clearAnimation() {
-      if (this.pathLayer) this.map.removeLayer(this.pathLayer);
-      if (this.currentAnimation) {
-        if (this.currentAnimation.marker) this.map.removeLayer(this.currentAnimation.marker);
-        if (this.currentAnimation.currentPolygon) this.map.removeLayer(this.currentAnimation.currentPolygon);
-        this.currentAnimation.polygons?.forEach(p => this.map.removeLayer(p));
       }
-      this.stopAnimation();
     },
-
+    // 移除图例
+    removeHeatLegend() {
+      this.heatLegend?.remove();
+    },
     async loadData() {
       try {
         const response = await fetch('/data/final_heatwaves.geojson');
@@ -262,7 +298,6 @@ export default {
           if (!feature?.properties) return null;
           const props = feature.properties;
 
-          // 解析 daily_info
           let dailyInfo = [];
           try {
             const rawStr = props.daily_info || '[]';
@@ -293,7 +328,6 @@ export default {
             dailyInfo = this.fallbackParse(props.daily_info);
           }
 
-          // 确保强度数据存在，否则设为0
           const cumulativeIntensity = Number(props.cumulative_anomaly) || 0;
           const maxIntensity = Number(props.max_anomaly) || 0;
 
@@ -367,6 +401,7 @@ export default {
     },
     
     renderEvents() {
+      if (this.showHeatmap) return; // 热力图模式下不渲染多边形
       if (!this.map || typeof this.map.addLayer !== 'function') {
         console.error('地图实例异常');
         return;
@@ -419,7 +454,6 @@ export default {
             this.currentHighlight = layer;
           });
           
-          // 可选：添加鼠标悬停效果
           layer.on('mouseover', () => {
             layer.setStyle({
               color: layer.originalStyle.color,
@@ -444,78 +478,37 @@ export default {
 
         const [startDate, endDate] = this.timeRange.map(d => new Date(d));
         
-        // 调试输出
-        console.log('当前过滤条件:', {
-          minDuration: this.minDuration,
-          minCumulativeIntensity: this.minCumulativeIntensity,
-          minMaxIntensity: this.minMaxIntensity,
-          timeRange: this.timeRange
-        });
-
         this.filteredEvents = this.allEvents.filter(event => {
           const props = event.properties;
           
-          // 调试输出每个事件的属性
-          console.log('检查事件:', {
-            id: props.event_id,
-            duration: props.duration,
-            cumulative_intensity: props.cumulative_intensity,
-            max_intensity: props.max_intensity,
-            start_date: props.start_date
-          });
-
-          // 持续时间筛选
           const duration = Number(props.duration) || 0;
-          if (duration < this.minDuration) {
-            console.log(`事件 ${props.event_id} 因持续时间 ${duration} < ${this.minDuration} 被过滤`);
-            return false;
-          }
+          if (duration < this.minDuration) return false;
+          if (props.cumulative_intensity < this.minCumulativeIntensity) return false;
+          if (props.max_intensity < this.minMaxIntensity) return false;
 
-          // 累计强度筛选
-          if (props.cumulative_intensity < this.minCumulativeIntensity) {
-            console.log(`事件 ${props.event_id} 因累计强度 ${props.cumulative_intensity} < ${this.minCumulativeIntensity} 被过滤`);
-            return false;
-          }
-          
-          // 最大强度筛选
-          if (props.max_intensity < this.minMaxIntensity) {
-            console.log(`事件 ${props.event_id} 因最大强度 ${props.max_intensity} < ${this.minMaxIntensity} 被过滤`);
-            return false;
-          }
-
-          // 时间范围筛选
           const eventStart = new Date(props.start_date);
           const eventEnd = new Date(eventStart);
           eventEnd.setDate(eventStart.getDate() + duration);
           
-          const timeValid = (
+          return (
             eventEnd >= startDate && 
             eventStart <= endDate &&
             !isNaN(eventStart.getTime())
           );
-          
-          if (!timeValid) {
-            console.log(`事件 ${props.event_id} 因时间范围 ${eventStart} 到 ${eventEnd} 不在 ${startDate} 至 ${endDate} 之间被过滤`);
-          }
-          
-          return timeValid;
         });
 
-        console.log('过滤结果:', {
-          original: this.allEvents.length,
-          filtered: this.filteredEvents.length
-        });
-        
-        // 如果没有过滤结果，尝试放宽条件测试
-        if (this.filteredEvents.length === 0) {
-          console.warn('没有匹配的事件，尝试放宽条件...');
-          const testFiltered = this.allEvents.filter(e => e.properties.duration >= 1);
-          console.log('仅按持续时间>=1天过滤结果:', testFiltered.length);
+         // 热力图模式下不渲染多边形
+        if (!this.showHeatmap) {
+          this.renderEvents();
         }
-
-        this.renderEvents();
+        // 热力图模式下需要更新热力数据
+        else if (this.heatLayer) {
+          const points = this.generateHeatmapData();
+          this.heatLayer.setLatLngs(points);
+          this.heatLayer.redraw();
+        }
       },
-    // 根据累计强度获取颜色
+
     getIntensityColor(intensity) {
       return this.intensityRanges.find(range => 
         intensity >= range.min && intensity < range.max
@@ -530,20 +523,14 @@ export default {
         <div class="popup-grid">
           <div>📅 开始日期:</div>
           <div>${properties.start_date.toLocaleDateString()}</div>
-          
           <div>⏳ 持续时间:</div>
           <div>${properties.duration} 天</div>
-          
           <div>🔥 累计强度:</div>
           <div>${properties.cumulative_intensity.toFixed(1)}</div>
-          
           <div>💥 最大强度:</div>
           <div>${properties.max_intensity.toFixed(1)}</div>
-          
           <div>📍 初始位置:</div>
-          <div>
-            ${ centroid ? `${centroid.lat.toFixed(2)}°N, ${centroid.lon.toFixed(2)}°E` : '未知' }
-          </div>
+          <div>${ centroid ? `${centroid.lat.toFixed(2)}°N, ${centroid.lon.toFixed(2)}°E` : '未知' }</div>
         </div>
       </div>
     `;
@@ -571,32 +558,126 @@ export default {
 </script>
 
 <style scoped>
-.leaflet-polygon {
-  transition: opacity 0.5s ease-in-out;
+/* 修改/添加以下样式 */
+.legend-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  min-width: 160px;
 }
 
-.animated-marker .pulsing-dot {
+/* 统一图例标题样式 */
+.legend h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #333;
+  font-weight: 600;
+}
+
+/* 强度图例样式 */
+.intensity-legend .legend-item {
+  display: flex;
+  align-items: center;
+  margin: 6px 0;
+  gap: 8px;
+}
+
+/* 热力图例渐变条 */
+.heat-legend .gradient-bar {
+  height: 10px;
+  width: 100%;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    v-bind('heatmapGradient[0.4]'),
+    v-bind('heatmapGradient[0.6]'),
+    v-bind('heatmapGradient[0.9]')
+  );
+  transition: background 0.3s ease;
+}
+
+/* 热力刻度标签 */
+.heat-legend .scale-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* 颜色块统一样式 */
+.color-box {
   width: 20px;
   height: 20px;
-  background: #ff0000;
-  border-radius: 50%;
-  animation: pulse 1.5s infinite;
-  box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
 }
 
-@keyframes pulse {
-  0% { transform: scale(0.8); }
-  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255,0,0,0); }
-  100% { transform: scale(0.8); }
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .legend-container {
+    bottom: 10px;
+    right: 10px;
+    padding: 8px;
+  }
+  
+  .legend h4 {
+    font-size: 13px;
+  }
+  
+  .scale-labels,
+  .legend-item span {
+    font-size: 11px;
+  }
 }
 
-.animation-control {
-  margin-top: 16px;
-  padding: 12px;
+.heatmap-control {
+  margin-left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.heatmap-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(255,255,255,0.8);
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.heat-legend {
   background: rgba(255,255,255,0.9);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  padding: 10px;
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.2);
 }
+
+.heat-legend h4 {
+  margin: 0 0 5px;
+  font-size: 14px;
+}
+
+.legend-scale div {
+  height: 10px;
+  width: 150px;
+  margin: 2px 0;
+}
+
+.legend-scale span {
+  display: inline-block;
+  width: 50%;
+  font-size: 12px;
+  text-align: center;
+}
+
 
 .heatwave-vis {
   height: 100vh;
@@ -670,12 +751,6 @@ export default {
 .popup-grid > div:nth-child(odd) {
   font-weight: 500;
   color: #666;
-}
-
-.control-panel {
-  position: relative;
-  z-index: 2;
-  pointer-events: auto;
 }
 
 .leaflet-container a.leaflet-control-attribution-leaflet {

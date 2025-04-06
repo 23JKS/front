@@ -17,6 +17,7 @@
     "frontend": "file:",
     "leaflet": "^1.9.4",
     "leaflet-draw": "^1.0.4",
+    "leaflet.heat": "^0.2.0",
     "mitt": "^3.0.1",
     "papaparse": "^5.5.2",
     "vue": "^3.2.13",
