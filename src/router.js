@@ -2,12 +2,32 @@ import { createRouter, createWebHistory } from 'vue-router';
 import Task1 from './views/Task1/Task1.vue';
 import Task2 from './views/Task2/Task2.vue';
 import Task3 from './views/Task3/Task3.vue';
+import UnderDevelopment from './views/Task3/UnderDevelopment.vue';
+import MainLayout from './layout/MainLayout.vue';
 // import Task3 from './views/Task3/index.vue';
 const routes = [
   { path: '/task1', component: Task1 },
   { path: '/task2', component: Task2 },
-  { path: '/task3', component: Task3 },
+  // { path: '/task3', component: Task3 },
   { path: '/', redirect: '/task1' }, // 默认重定向到 Task1
+  {
+    path:'/',
+    component:MainLayout,
+    children: [
+      {
+        path: '/task3',
+        name: 'Task3',
+        component: Task3,
+      },
+      {
+        path: '/under-development',
+        name: 'UnderDevelopment',
+        component: UnderDevelopment,
+      }
+    ]
+  },
+ 
+
 ];
 
 const router = createRouter({

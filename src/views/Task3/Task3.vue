@@ -1,45 +1,51 @@
 <template>
-  <div class="dashboard-container">
-    <h1>热浪事件分析看板</h1>
+  
     
-    <!-- 加载状态 -->
-    <div v-if="loading" class="status-container">
-      <div class="loading-spinner"></div>
-      <div class="loading-text">数据加载中...</div>
-    </div>
+   <!-- 右侧内容区 -->
+   <div class="main-content">
+      <div class="dashboard-container">
+        <h1>热浪事件分析看板</h1>
+        
+        <!-- 加载状态 -->
+        <div v-if="loading" class="status-container">
+          <div class="loading-spinner"></div>
+          <div class="loading-text">数据加载中...</div>
+        </div>
 
-    <!-- 错误状态 -->
-    <div v-if="error" class="status-container error">
-      <div class="error-icon">!</div>
-      <div class="error-text">{{ error }}</div>
-    </div>
+        <!-- 错误状态 -->
+        <div v-if="error" class="status-container error">
+          <div class="error-icon">!</div>
+          <div class="error-text">{{ error }}</div>
+        </div>
 
-    <!-- 图表展示 -->
-    <div v-if="!loading && !error" class="chart-grid">
-      <!-- 持续时间分布 -->
-      <div class="chart-card">
-        <h3>事件持续时间分布</h3>
-        <div ref="durationChart" class="chart"></div>
+        <!-- 图表展示 -->
+        <div v-if="!loading && !error" class="chart-grid">
+          <!-- 持续时间分布 -->
+
+          <div class="chart-card">
+            <h3>事件持续时间分布</h3>
+            <div ref="durationChartRef" class="chart"></div>
+          </div>
+
+          <!-- 异常值趋势 -->
+          <div class="chart-card">
+            <h3>最大异常值趋势</h3>
+            <div ref="anomalyChartRef" class="chart"></div>
+          </div>
+
+          <!-- 涡旋覆盖比例 -->
+          <div class="chart-card">
+            <h3>涡旋覆盖比例分布</h3>
+            <div ref="vortexChartRef" class="chart"></div>
+          </div>
+
+          <!-- 综合时间线 -->
+          <div class="chart-card full-width">
+            <h3>事件时间线分析</h3>
+            <div ref="timelineChartRef" class="chart"></div>
+          </div>
+        </div>
       </div>
-
-      <!-- 异常值趋势 -->
-      <div class="chart-card">
-        <h3>最大异常值趋势</h3>
-        <div ref="anomalyChart" class="chart"></div>
-      </div>
-
-      <!-- 涡旋覆盖比例 -->
-      <div class="chart-card">
-        <h3>涡旋覆盖比例分布</h3>
-        <div ref="vortexChart" class="chart"></div>
-      </div>
-
-      <!-- 综合时间线 -->
-      <div class="chart-card full-width">
-        <h3>事件时间线分析</h3>
-        <div ref="timelineChart" class="chart"></div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -94,17 +100,25 @@ export default {
       // 添加resize监听
       window.addEventListener('resize', this.handleResize)
   },
-  beforeUnmount() {
-    // 移除窗口resize监听
-    window.removeEventListener('resize', this.handleResize);
+  // beforeUnmount() {
+  //   // 移除窗口resize监听
+  //   window.removeEventListener('resize', this.handleResize);
     
-    // 清理所有图表实例
-    this.chartInstances.forEach(({ chart, handler }) => {
-      emitter.off('window-resize', handler); // 移除事件监听
-      chart.dispose(); // 销毁图表
-    });
-    this.chartInstances = []; // 清空数组
-  },
+  //   // 清理所有图表实例
+  //   this.chartInstances.forEach(({ chart, handler }) => {
+  //     emitter.off('window-resize', handler); // 移除事件监听
+  //     chart.dispose(); // 销毁图表
+  //   });
+  //   this.chartInstances = []; // 清空数组
+  // },
+  beforeUnmount() {
+  // 清理所有图表实例
+  this.chartInstances.forEach(instance => {
+    instance.chart.dispose()
+    window.removeEventListener('resize', instance.resizeHandler)
+  })
+  this.chartInstances = []
+},
   methods: {
     async loadCSVData() {
       try {
@@ -142,13 +156,14 @@ export default {
                 this.loading = false
               })
             })
+           
             console.log('清洗后的数据:', this.eventsData)
              // 添加数据验证
             if (this.eventsData.length === 0) {
               this.handleError('数据验证失败', new Error('清洗后数据为空'))
               return
             }
-            this.initCharts()
+            // this.initCharts()
             this.loading = false
           },
           error: (error) => {
@@ -181,6 +196,19 @@ export default {
     },
 
     initCharts() {
+        // 验证所有图表容器
+      const refs = [
+        'durationChartRef',
+        'anomalyChartRef',
+        'vortexChartRef',
+        'timelineChartRef'
+      ]
+      
+      if (!refs.every(ref => this.$refs[ref])) {
+        console.error('部分图表容器未找到，延迟初始化')
+        setTimeout(() => this.initCharts(), 100)
+        return
+      }
       //打印调试信息
       console.log('开始初始化图表')
       // 验证DOM元素
@@ -192,46 +220,8 @@ export default {
       // 确保DOM更新完成
       this.$nextTick(() => {
         console.log('DOM更新完成')
-
-
-    
-        // 持续时间直方图
-        this.createChart(this.$refs.durationChart, {
-          tooltip: {
-            trigger: 'axis',
-            formatter: params => {
-              const data = this.eventsData[params[0].dataIndex]
-              return `
-                <strong>事件#${data.id}</strong><br>
-                持续天数: ${data.duration}<br>
-                开始日期: ${data.startDate.toLocaleDateString()}
-              `
-            }
-          },
-          xAxis: {
-            type: 'category',
-            data: this.eventsData.map(d => `事件#${d.id}`),
-            axisLabel: {
-              rotate: 45,
-              interval: 0,
-              formatter: (value) => value.split('#')[1]
-            }
-          },
-          yAxis: { type: 'value', name: '天数' },
-          series: [{
-            data: this.eventsData.map(d => d.duration),
-            type: 'bar',
-            itemStyle: {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: '#5470C6' },
-                { offset: 1, color: '#83A7F0' }
-              ])
-            }
-          }]
-        })
-
         // 异常值趋势图
-        this.createChart(this.$refs.anomalyChart, {
+        this.createChart( 'anomalyChartRef', {
           tooltip: {
             trigger: 'axis',
             axisPointer: { type: 'shadow' }
@@ -259,7 +249,7 @@ export default {
         })
 
         // 涡旋覆盖比例饼图
-        this.createChart(this.$refs.vortexChart, {
+        this.createChart('vortexChartRef', {
           tooltip: {
             trigger: 'item',
             formatter: params => `
@@ -292,7 +282,7 @@ export default {
         })
 
         // 时间线散点图
-        this.createChart(this.$refs.timelineChart, {
+        this.createChart('timelineChartRef', {
           tooltip: {
             trigger: 'item',
             formatter: params => {
@@ -307,27 +297,25 @@ export default {
           },
           xAxis: {
             type: 'time',
+            // 增加轴配置
             axisLabel: {
-              formatter: {
-                year: '{yyyy}',
-                month: '{MMM}',
-                day: '{dd}'
-              }
+              formatter: '{yyyy}-{MM}-{dd}'
             },
-            splitLine: { show: false }
+            min: 'dataMin',
+            max: 'dataMax',
+            boundaryGap: false
           },
           yAxis: { type: 'value', name: '异常值' },
           series: [{
             type: 'scatter',
             symbolSize: d => {
-              // 添加多重保护
-              const value = d.value ? d.value[1] : 0
-              return Math.sqrt(value || 0) * 8
+              const value = d.value ? Math.abs(d.value[1]) : 0;
+              return Math.sqrt(value) * 3 + 5; // 保证最小可见尺寸
             },
             data: this.eventsData
-            .filter(d => d.maxAnomaly) // 过滤无效数据
+            .filter(d => typeof d.maxAnomaly === 'number') // 过滤无效数据
             .map(d => ({
-              value: [d.startDate, d.maxAnomaly || 0], // 确保数值存在
+              value: [d.startDate.getTime(), d.maxAnomaly || 0],// 确保数值存在
               name: `事件#${d.id}`,
               date: d.startDate.toLocaleDateString(),
               duration: d.duration
@@ -344,12 +332,72 @@ export default {
             }
           }]
         })
+        // 持续时间分布图（仅保留直方图）
+        const durations = this.eventsData.map(d => d.duration);
+
+        // 计算分箱参数
+        const binSize = Math.ceil(
+          (Math.max(...durations) - Math.min(...durations)) / 10
+        );
+
+        // 生成直方图数据
+        const histogram = durations.reduce((acc, curr) => {
+          const bin = Math.floor(curr / binSize) * binSize;
+          acc[bin] = (acc[bin] || 0) + 1;
+          return acc;
+        }, {});
+
+        // 图表配置
+        this.createChart('durationChartRef', {
+          tooltip: {
+            trigger: 'axis',
+            formatter: params => {
+              const binRange = params[0].name;
+              return `持续时间区间: ${binRange}天<br>事件数量: ${params[0].value}`;
+            }
+          },
+          xAxis: {
+            type: 'category',
+            name: '持续时间（天）',
+            data: Object.keys(histogram)
+                      .sort((a,b) => a - b)
+                      .map(b => `${b}-${+b + binSize}`),
+            axisLabel: { 
+              rotate: 45,
+              formatter: (value) => value.replace('-', '~')
+            }
+          },
+          yAxis: {
+            type: 'value',
+            name: '事件数量',
+            min: 0
+          },
+          series: [{
+            name: '持续时间分布',
+            type: 'bar',
+            data: Object.values(histogram),
+            itemStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: '#5470C6' },
+                { offset: 1, color: '#83A7F0' }
+              ])
+            }
+          }],
+          legend: {
+            data: ['持续时间分布'],
+            top: 10
+          }
+        });
+    
+     
       })
     },
 
-    createChart(el, option) {
-      if (!el) {
-        console.error('图表容器不存在')
+    createChart(refName, option) {
+      const el = this.$refs[refName]
+      if (!el || !el.offsetParent) {
+        console.warn(`图表容器${refName}不可见，延迟创建`)
+        setTimeout(() => this.createChart(refName, option), 300)
         return
       }
       
