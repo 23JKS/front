@@ -608,7 +608,7 @@ export default {
   touch-action: none;
   z-index: 1;
   pointer-events: auto !important;
-  height: 600px;
+  height: 1000px;
   width: 100%;
   background: #f0f2f5;
   position: relative;

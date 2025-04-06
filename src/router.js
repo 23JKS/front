@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import Task1 from './views/Task1/Task1.vue';
 import Task2 from './views/Task2/Task2.vue';
 import Task3 from './views/Task3/Task3.vue';
-
+// import Task3 from './views/Task3/index.vue';
 const routes = [
   { path: '/task1', component: Task1 },
   { path: '/task2', component: Task2 },
