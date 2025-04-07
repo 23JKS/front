@@ -100,17 +100,7 @@ export default {
       // 添加resize监听
       window.addEventListener('resize', this.handleResize)
   },
-  // beforeUnmount() {
-  //   // 移除窗口resize监听
-  //   window.removeEventListener('resize', this.handleResize);
-    
-  //   // 清理所有图表实例
-  //   this.chartInstances.forEach(({ chart, handler }) => {
-  //     emitter.off('window-resize', handler); // 移除事件监听
-  //     chart.dispose(); // 销毁图表
-  //   });
-  //   this.chartInstances = []; // 清空数组
-  // },
+
   beforeUnmount() {
   // 清理所有图表实例
   this.chartInstances.forEach(instance => {
@@ -334,59 +324,62 @@ export default {
         })
         // 持续时间分布图（仅保留直方图）
         const durations = this.eventsData.map(d => d.duration);
+        const minDuration = Math.min(...durations);
+        const maxDuration = Math.max(...durations);
+        const binSize = Math.ceil((maxDuration - minDuration) / 10);
 
-        // 计算分箱参数
-        const binSize = Math.ceil(
-          (Math.max(...durations) - Math.min(...durations)) / 10
-        );
-
-        // 生成直方图数据
+        // 生成直方图数据（基于最小值的分箱）
         const histogram = durations.reduce((acc, curr) => {
-          const bin = Math.floor(curr / binSize) * binSize;
-          acc[bin] = (acc[bin] || 0) + 1;
+          const binIndex = Math.floor((curr - minDuration) / binSize);
+          const binStart = minDuration + binIndex * binSize;
+          acc[binStart] = (acc[binStart] || 0) + 1;
           return acc;
         }, {});
+
+        // 过滤空区间
+        const validBins = Object.keys(histogram)
+          .map(Number)
+          .filter(start => start >= minDuration)
+          .sort((a,b) => a - b);
 
         // 图表配置
         this.createChart('durationChartRef', {
           tooltip: {
             trigger: 'axis',
             formatter: params => {
-              const binRange = params[0].name;
-              return `持续时间区间: ${binRange}天<br>事件数量: ${params[0].value}`;
+              const [start, end] = params[0].name.split('~');
+              return `持续天数: ${start}~${end}天<br>事件数量: ${params[0].value}`;
             }
           },
           xAxis: {
             type: 'category',
-            name: '持续时间（天）',
-            data: Object.keys(histogram)
-                      .sort((a,b) => a - b)
-                      .map(b => `${b}-${+b + binSize}`),
+            name: '持续时间区间（天）',
+            data: validBins.map(start => `${start}~${start + binSize}`),
             axisLabel: { 
               rotate: 45,
-              formatter: (value) => value.replace('-', '~')
+              formatter: value => value.replace('~', '-') // 按需调整连接符
             }
           },
           yAxis: {
             type: 'value',
             name: '事件数量',
-            min: 0
+            min: 0,
+            axisLabel: {
+              formatter: value => Math.round(value) // 确保整数显示
+            }
           },
           series: [{
             name: '持续时间分布',
             type: 'bar',
-            data: Object.values(histogram),
+            data: validBins.map(start => histogram[start]),
             itemStyle: {
               color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
                 { offset: 0, color: '#5470C6' },
                 { offset: 1, color: '#83A7F0' }
               ])
-            }
-          }],
-          legend: {
-            data: ['持续时间分布'],
-            top: 10
-          }
+            },
+            barCategoryGap: '10%' // 优化柱间距
+          }]
         });
     
      

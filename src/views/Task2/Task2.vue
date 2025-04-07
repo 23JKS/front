@@ -193,6 +193,17 @@ export default {
     }
   },
   methods: {
+    logOperation(type, params) {
+      const entry = {
+        type,
+        timestamp: new Date().toISOString(),
+        params: JSON.parse(JSON.stringify(params)),
+        component: 'Taks2'
+      };
+      
+      this.$store.commit('history/ADD_OPERATION', entry);
+    },
+
     async initHeatPlugin() {
       if (typeof window !== 'undefined') {
         await import('leaflet.heat/dist/leaflet-heat.js');
@@ -219,6 +230,9 @@ export default {
      // 切换热力图显示
     // 修改后的切换热力图方法
     toggleHeatmap() {
+      this.logOperation('开启热力图', { 
+        status: this.showHeatmap 
+      });
       if (this.showHeatmap) {
         // 移除原有热浪多边形
         if (this.geoJsonLayer) {
@@ -245,6 +259,10 @@ export default {
 
      // 更新热力图参数
      updateHeatmap() {
+      this.logOperation('HEATMAP_CONFIG', {
+        radius: this.heatmapRadius,
+        type: this.heatmapType
+      });
       if (this.heatLayer) {
         this.heatLayer.setOptions({
           radius: this.heatmapRadius,
@@ -474,6 +492,17 @@ export default {
     },
 
     filterEvents() {
+     
+      this.$store.commit('history/ADD_OPERATION', {
+        type: 'FILTER_UPDATE',
+        timestamp: new Date().toISOString(),
+        details: `热浪强度可视化中过滤条件更新: 
+          时间范围 ${this.timeRange.join(' ~ ')}
+          最小持续时间 ${this.minDuration}天
+          最小累计强度 ${this.minCumulativeIntensity}
+          最大强度阈值 ${this.minMaxIntensity}`
+      });
+       
         if (!this.allEvents.length) return;
 
         const [startDate, endDate] = this.timeRange.map(d => new Date(d));
