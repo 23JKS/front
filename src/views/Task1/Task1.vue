@@ -87,38 +87,6 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-
-// 升级版 GeoJSONFixer
-// const GeoJSONFixer = {
-//   preprocess(str) {
-//     return str
-//       .replace(/'/g, '"')
-//       .replace(/None/g, 'null')
-//       .replace(/(\w+):/g, '"$1":')
-//       // 修复坐标数组中的非法逗号 (172.1, 45.2],] => 172.1,45.2]]
-//       .replace(/(\d+\.\d+),\s*]/g, '$1]')
-//       // 移除多余逗号 [[1,2],,] => [[1,2]]
-//       .replace(/,(\s*[\]}])/g, '$1')
-//       // 修复多级数组闭合问题 ((( => [[[ 
-//       .replace(/\(/g, '[').replace(/\)/g, ']')
-//       // 处理数字后的非法逗号 123,] => 123]
-//       .replace(/(\d+),]/g, '$1]');
-//   },
-
-//   // 安全解析方法
-//   safeParse(str) {
-//     try {
-//       return JSON.parse(str);
-//     } catch (e) {
-//       // 尝试修复未闭合的数组
-//       const fixed = str
-//         .replace(/(\[[^[]+?)([,\]]*)$/g, '$1]')
-//         .replace(/},]/g, '}]');
-//       return JSON.parse(fixed);
-//     }
-//   }
-// };
-// 速度颜色映射
 const SPEED_COLORS = {
   low: '#4CAF50',
   medium: '#FFC107',
@@ -128,10 +96,14 @@ const SPEED_COLORS = {
 export default {
   name: 'HeatwaveVisualization',
   data() {
-    // 设置2020年6月1日 - 8月31日作为默认时间范围
+  
     const defaultStart = new Date(2020, 5, 1); // 2020-06-01
     const defaultEnd = new Date(2020, 7, 31);   // 2020-08-31
     return {
+      loadedTiles: new Set(),       // 已加载的区块标识
+      currentZoom: 4,              // 当前缩放级别
+      tileLayers: new Map(),        // 已加载的图层
+    // 设置2020年6月1日 - 8月31日作为默认时间范围
       progressStyle: { width: '0%' }, // 初始化进度条样式
       isGlobalPlaying: false,
       globalAnimationInterval: null,
@@ -175,7 +147,11 @@ export default {
     try {
       // 先初始化地图
       this.initMap();
-      
+      this.map.on('moveend', this.updateTiles);
+      this.map.on('zoomend', () => {
+        this.currentZoom = this.map.getZoom();
+        this.updateTiles();
+      });
       // 再加载数据
       await this.loadData();
       
@@ -198,6 +174,114 @@ export default {
     }
   },
   methods: {
+     // 生成区块唯一标识
+    getTileKey(bounds) {
+      return `${Math.floor(bounds.getSouth()/5)*5}-${Math.floor(bounds.getWest()/5)*5}`;
+    },
+
+    // 获取当前需要加载的区块
+    getRequiredTiles() {
+      const bounds = this.map.getBounds();
+      const tiles = new Set();
+      
+      // 计算可视区域覆盖的区块
+      for (let lat = Math.floor(bounds.getSouth()/5)*5; lat <= bounds.getNorth(); lat +=5) {
+        for (let lng = Math.floor(bounds.getWest()/5)*5; lng <= bounds.getEast(); lng +=5) {
+          tiles.add(`${lat}-${lng}`);
+        }
+      }
+      return tiles;
+    },
+        // 更新区块加载状态
+    // 修改updateTiles方法（约215行）
+    async updateTiles() {
+      // 暂停执行直到地图初始化完成
+      if (!this.map) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return this.updateTiles();
+      }
+
+      const bounds = this.map.getBounds();
+      const zoom = this.map.getZoom();
+      
+      // 根据缩放级别动态调整区块大小
+      const gridSize = zoom > 6 ? 2 : 5; // 高缩放级别使用更小网格
+      
+      const tiles = new Set();
+      for (let lat = Math.floor(bounds.getSouth()/gridSize)*gridSize; 
+          lat <= bounds.getNorth(); 
+          lat += gridSize) {
+        for (let lng = Math.floor(bounds.getWest()/gridSize)*gridSize;
+            lng <= bounds.getEast();
+            lng += gridSize) {
+          tiles.add(`${lat}-${lng}`);
+        }
+      }
+    },
+    // 加载单个区块数据
+    async loadTileData(lat, lng) {
+      try {
+        // 加载本地GeoJSON文件
+        const response = await fetch('/mock/api/heatwaves.geojson');
+        const fullData = await response.json();
+        
+        // 根据区块范围过滤要素
+        const west = lng;
+        const east = lng + 5;
+        const south = lat;
+        const north = lat + 5;
+
+        const filteredFeatures = fullData.features.filter(feature => {
+          const [minLng, minLat, maxLng, maxLat] = this.getFeatureBBox(feature);
+          return (
+            minLng < east &&
+            maxLng > west &&
+            minLat < north &&
+            maxLat > south
+          );
+        });
+
+        return L.geoJSON({
+          type: "FeatureCollection",
+          features: filteredFeatures
+        }, {
+          style: this.getFeatureStyle,
+          onEachFeature: this.bindFeatureEvents,
+          coordsToLatLng: coords => L.latLng(coords[1], coords[0]) // 转换坐标顺序
+        }).addTo(this.map);
+
+      } catch (error) {
+        console.error('本地数据加载失败:', error);
+        return L.layerGroup();
+      }
+    },
+
+    // 统一要素样式
+      // 新增方法：获取要素的边界框
+    getFeatureBBox(feature) {
+      const coords = feature.geometry.coordinates[0];
+      let minLng = Infinity, maxLng = -Infinity;
+      let minLat = Infinity, maxLat = -Infinity;
+      
+      coords.forEach(([lng, lat]) => {
+        minLng = Math.min(minLng, lng);
+        maxLng = Math.max(maxLng, lng);
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+      });
+      
+      return [minLng, minLat, maxLng, maxLat];
+    },
+    // 统一事件绑定
+    bindFeatureEvents(feature, layer) {
+      layer.bindPopup(this.createPopupContent(feature.properties));
+      
+      layer.on({
+        click: this.handleFeatureClick,
+        mouseover: this.handleFeatureHover,
+        mouseout: this.handleFeatureLeave
+      });
+    },
     // 在methods中添加
     clearAllLayers() {
       // 清除静态图层
@@ -272,92 +356,91 @@ export default {
       );
     },
 
-   // 修改updateGlobalAnimation方法（关键部分）
-updateGlobalAnimation() {
-  if (this.currentStep >= this.maxSteps) {
-    this.resetGlobalAnimation();
-    return;
-  }
+      // 修改updateGlobalAnimation方法（关键部分）
+    updateGlobalAnimation() {
+      if (this.currentStep >= this.maxSteps) {
+        this.resetGlobalAnimation();
+        return;
+      }
 
-  const currentDate = this.timelineDates[this.currentStep];
-  const currentISODate = this.formatDate(currentDate);
+      const currentDate = this.timelineDates[this.currentStep];
+      const currentISODate = this.formatDate(currentDate);
 
-  // 清理过期图层（严格生命周期控制）
-  this.activeLayers.forEach((layer, eventId) => {
-    const event = this.filteredEvents.find(e => e.properties.event_id === eventId);
-    if (!event) return;
+      // 清理过期图层（严格生命周期控制）
+      this.activeLayers.forEach((layer, eventId) => {
+        const event = this.filteredEvents.find(e => e.properties.event_id === eventId);
+        if (!event) return;
 
-    // 准确计算事件结束日期（包含最后一整天）
-    const eventEndDate = new Date(event.properties.start_date);
-    eventEndDate.setDate(eventEndDate.getDate() + event.properties.duration - 1); // 包含最后一天
-    const eventEndISODate = this.formatDate(eventEndDate);
+        // 准确计算事件结束日期（包含最后一整天）
+        const eventEndDate = new Date(event.properties.start_date);
+        eventEndDate.setDate(eventEndDate.getDate() + event.properties.duration - 1); // 包含最后一天
+        const eventEndISODate = this.formatDate(eventEndDate);
 
-    // 严格过期判断（超过结束日期才移除）
-    if (currentISODate > eventEndISODate) {
-      layer.remove();
-      this.activeLayers.delete(eventId);
-    }
-  });
-
-  // 创建/更新多边形（禁用自动缩放）
-  this.filteredEvents.forEach(event => {
-    const startDate = new Date(event.properties.start_date);
-    const startISODate = this.formatDate(startDate);
-    const eventEndDate = new Date(startDate);
-    eventEndDate.setDate(startDate.getDate() + event.properties.duration - 1);
-    const eventEndISODate = this.formatDate(eventEndDate);
-
-    // 仅处理当前日期范围内的事件
-    if (currentISODate >= startISODate && currentISODate <= eventEndISODate) {
-      const dayInfo = event.properties.daily_info.find(d => 
-        this.formatDate(new Date(d.date)) === currentISODate
-      );
-
-      // 添加多边形可见性调试
-      console.log(`事件#${event.properties.event_id} ${currentISODate}`, {
-        start: startISODate,
-        end: eventEndISODate,
-        exists: !!dayInfo?.geometry?.coordinates
+        // 严格过期判断（超过结束日期才移除）
+        if (currentISODate > eventEndISODate) {
+          layer.remove();
+          this.activeLayers.delete(eventId);
+        }
       });
 
-      if (dayInfo?.geometry?.coordinates) {
-        // 转换坐标顺序 [经度, 纬度] => [纬度, 经度]
-        const latlngs = dayInfo.geometry.coordinates[0].map(c => [c[1], c[0]]);
+      // 创建/更新多边形（禁用自动缩放）
+      this.filteredEvents.forEach(event => {
+        const startDate = new Date(event.properties.start_date);
+        const startISODate = this.formatDate(startDate);
+        const eventEndDate = new Date(startDate);
+        eventEndDate.setDate(startDate.getDate() + event.properties.duration - 1);
+        const eventEndISODate = this.formatDate(eventEndDate);
 
-        if (this.activeLayers.has(event.properties.event_id)) {
-          // 更新现有多边形（保持当前位置）
-          const polygon = this.activeLayers.get(event.properties.event_id);
-          polygon.setLatLngs([latlngs]);
-        } else {
-          // 创建新多边形（禁用弹出动画）
-          const polygon = L.polygon([latlngs], {
-            color: this.getSpeedColor(event.properties.speed), // 边框颜色与填充色一致
-            weight: 1,          // 减少边框宽度
-            opacity: 0.5,       // 降低边框透明度
-            fillColor: this.getSpeedColor(event.properties.speed),
-            fillOpacity: 0.7
-          }).addTo(this.map);
-          
-          this.activeLayers.set(event.properties.event_id, polygon);
+        // 仅处理当前日期范围内的事件
+        if (currentISODate >= startISODate && currentISODate <= eventEndISODate) {
+          const dayInfo = event.properties.daily_info.find(d => 
+            this.formatDate(new Date(d.date)) === currentISODate
+          );
+
+          // 添加多边形可见性调试
+          console.log(`事件#${event.properties.event_id} ${currentISODate}`, {
+            start: startISODate,
+            end: eventEndISODate,
+            exists: !!dayInfo?.geometry?.coordinates
+          });
+
+          if (dayInfo?.geometry?.coordinates) {
+            // 转换坐标顺序 [经度, 纬度] => [纬度, 经度]
+            const latlngs = dayInfo.geometry.coordinates[0].map(c => [c[1], c[0]]);
+
+            if (this.activeLayers.has(event.properties.event_id)) {
+              // 更新现有多边形（保持当前位置）
+              const polygon = this.activeLayers.get(event.properties.event_id);
+              polygon.setLatLngs([latlngs]);
+            } else {
+              // 创建新多边形（禁用弹出动画）
+              const polygon = L.polygon([latlngs], {
+                color: this.getSpeedColor(event.properties.speed), // 边框颜色与填充色一致
+                weight: 1,          // 减少边框宽度
+                opacity: 0.5,       // 降低边框透明度
+                fillColor: this.getSpeedColor(event.properties.speed),
+                fillOpacity: 0.7
+              }).addTo(this.map);
+              
+              this.activeLayers.set(event.properties.event_id, polygon);
+            }
+          }
         }
+      });
+
+ 
+
+      // 强制重绘图层
+      this.map.invalidateSize({ animate: false });
+
+      this.currentDate = currentDate;
+      this.currentStep++;
+      // 在 updateGlobalAnimation 末尾添加
+      if (this.currentStep >= this.maxSteps) {
+        this.resetGlobalAnimation();
+        this.$message.success('播放完成，已恢复静态视图');
       }
-    }
-  });
-
-  // 移除自动缩放逻辑
-  // this.map.flyToBounds(...) 
-
-  // 强制重绘图层
-  this.map.invalidateSize({ animate: false });
-
-  this.currentDate = currentDate;
-  this.currentStep++;
-  // 在 updateGlobalAnimation 末尾添加
-  if (this.currentStep >= this.maxSteps) {
-    this.resetGlobalAnimation();
-    this.$message.success('播放完成，已恢复静态视图');
-  }
-},
+    },
     // 新增方法：获取事件结束日期
     getEventEndDate(event) {
       const startDate = new Date(event.properties.start_date);
@@ -459,7 +542,6 @@ updateGlobalAnimation() {
 
       this.toggleAnimation();
     },
-
     playNextStep() {
       if (!this.isPlaying) return;
 
@@ -468,28 +550,23 @@ updateGlobalAnimation() {
 
       this.animationInterval = setInterval(() => {
         if (anim.currentIndex < anim.polygons.length - 1) {
-          // 移除旧多边形
-          if (anim.currentPolygon) {
-            this.map.removeLayer(anim.currentPolygon);
-          }
-          
-          // 更新索引
-          anim.currentIndex++;
-          
-          // 添加新多边形
-          anim.currentPolygon = anim.polygons[anim.currentIndex].addTo(this.map);
-          
-          // 移动标记
-          const point = anim.feature.properties.daily_info[anim.currentIndex].centroid;
-          anim.marker.setLatLng([point.lat, point.lon]);
-          
-          // 更新进度条
-          this.animationProgress = (anim.currentIndex / (anim.polygons.length - 1)) * 100;
+          this.updateAnimationFrame(anim);
         } else {
           this.stopAnimation();
         }
       }, interval);
     },
+    updateAnimationFrame(anim) {
+      if (anim.currentPolygon) {
+        this.map.removeLayer(anim.currentPolygon);
+      }
+      anim.currentIndex++;
+      anim.currentPolygon = anim.polygons[anim.currentIndex].addTo(this.map);
+      const point = anim.feature.properties.daily_info[anim.currentIndex].centroid;
+      anim.marker.setLatLng([point.lat, point.lon]);
+      this.animationProgress = (anim.currentIndex / (anim.polygons.length - 1)) * 100;
+    },
+   
    
     updateMarkerPosition() {
       const { currentIndex, feature } = this.currentAnimation;
@@ -692,6 +769,7 @@ updateGlobalAnimation() {
       container._leaflet_id = null; // 清除leaflet缓存
       // 创建新地图实例
       this.map = L.map('map-container', {
+        renderer: L.canvas(), // 强制使用Canvas渲染
         zoomControl: false,
         preferCanvas: true,
         dragging: true, // 显式启用拖动
@@ -701,7 +779,12 @@ updateGlobalAnimation() {
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
       }).addTo(this.map);
-      
+      // 添加事件监听
+      this.map.on('moveend', this.updateTiles);
+      this.map.on('zoomend', () => {
+        this.currentZoom = this.map.getZoom();
+        this.updateTiles();
+      });
       // 添加触摸事件监听修复
       this.map.on('touchstart', (e) => {
         if (e.originalEvent.touches.length === 1) {
@@ -943,9 +1026,9 @@ updateGlobalAnimation() {
 }
 
 @keyframes pulse {
-  0% { filter: brightness(1); }
-  50% { filter: brightness(1.15); }
-  100% { filter: brightness(1); }
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255,0,0,0); }
+  100% { transform: scale(0.8); }
 }
 
 
@@ -969,20 +1052,6 @@ updateGlobalAnimation() {
   animation: polygonPulse 2s infinite;
 }
 
-@keyframes polygonPulse {
-  0% { 
-    filter: brightness(1);
-    transform: scale(1);
-  }
-  50% {
-    filter: brightness(1.2);
-    transform: scale(1.02);
-  }
-  100% {
-    filter: brightness(1);
-    transform: scale(1);
-  }
-}
 
 
 .animated-marker .pulsing-dot {

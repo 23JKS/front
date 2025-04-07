@@ -14,8 +14,8 @@
         
         <div v-if="showHeatmap" class="heatmap-options">
           <el-radio-group v-model="heatmapType" size="small">
-            <el-radio-button label="density">事件密度</el-radio-button>
-            <el-radio-button label="intensity">强度分布</el-radio-button>
+            <el-radio-button value="density">事件密度</el-radio-button>
+            <el-radio-button value="intensity">强度分布</el-radio-button>
           </el-radio-group>
           
           <el-slider
@@ -56,7 +56,7 @@
         <el-slider
           v-model="minCumulativeIntensity"
           :min="0"
-          :max="500"
+          :max="2000"
           :step="5"
           @change="filterEvents"
         />
@@ -100,6 +100,7 @@
         </div>
       </div>
     </div>
+    <CacheMonitor :cacheManager="cacheManager" />
   </div>
 </template>
 
@@ -107,6 +108,12 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat/dist/leaflet-heat.js';
+
+
+// 或如果使用统一导出方式：
+import CacheManager,{HybridStrategy} from '@/lib/cacheManager';
+import CacheMonitor from '@/components/CacheMonitor';
+
 const GeoJSONFixer = {
   preprocess(str) {
     return str
@@ -138,11 +145,17 @@ const INTENSITY_COLORS = {
 };
 
 export default {
+  components: { CacheMonitor },
   name: 'HeatwaveVisualization',
   data() {
     const defaultStart = new Date(2020, 5, 1);
     const defaultEnd = new Date(2020, 7, 31);
     return {
+      cacheManager: new CacheManager(
+        'HeatwaveCache',  // 缓存名称
+        1,// IndexedDB 版本
+        new HybridStrategy(100, 3600000 * 24 * 7)
+      ),
          // 新增热力图相关数据
       showHeatmap: false,
       heatLayer: null,
@@ -176,14 +189,17 @@ export default {
   },
   
   async mounted() {
-  try {
-    await this.initHeatPlugin();
-    this.initMap();
-    await this.loadData();
-    this.filterEvents();
-  } catch (error) {
-    console.error('初始化失败:', error);
-  }
+    await this.cacheManager.init();
+    try {
+      await this.initHeatPlugin();
+        // 先初始化缓存管理器
+      await this.cacheManager.init(); 
+      this.initMap();
+      await this.loadData();
+      this.filterEvents();
+    } catch (error) {
+      console.error('初始化失败:', error);
+    }
   },
   computed: {
     heatLegendTitle() {
@@ -308,9 +324,26 @@ export default {
       this.heatLegend?.remove();
     },
     async loadData() {
+      const tileKey = 'final_heatwaves'; // 缓存的键
       try {
-        const response = await fetch('/data/final_heatwaves.geojson');
-        const data = await response.json();
+      
+        let data = await this.cacheManager.get(tileKey);
+          // 增加缓存有效性检查
+        if (data && !this.validateCache(data)) {
+          console.log('缓存数据格式已过期');
+          await this.cacheManager.db.delete(this.storeName, tileKey); // 删除无效缓存
+          data = null;
+        }
+        if (!data) {
+          console.log('缓存未命中，从data中加载数据...');
+          const response = await fetch('/data/final_heatwaves.geojson');
+          data = await response.json();
+
+          // 将数据存储到缓存中
+          await this.cacheManager.set(tileKey, data);
+        } else {
+          console.log('从缓存加载数据...');
+        }
 
         this.allEvents = data.features.map(feature => {
           if (!feature?.properties) return null;
@@ -373,7 +406,16 @@ export default {
         console.error('数据加载失败:', error);
       }
     },
-
+    validateCache(data) {
+      return Object.prototype.hasOwnProperty.call(
+        data?.features?.[0]?.properties || {}, 
+        'daily_info'
+      );
+    },
+    async _performCleanup() {
+      const tx = this.db.transaction(this.storeName, 'readwrite');
+      await this.strategy.cleanup(tx.objectStore(this.storeName));
+    },
     fallbackParse(str) {
       const results = [];
       const pattern = /"date": "(\d{4}-\d{2}-\d{2})".*?"lon": ([\d.]+).*?"lat": ([\d.]+)/g;
@@ -390,10 +432,22 @@ export default {
       }
       return results;
     },
-    
+ 
     initMap() {
+         // 在Task2.vue的initMap方法顶部添加
+      function patchLeafletCanvas() {
+        const originalInit = L.Canvas.prototype._initContainer;
+        L.Canvas.prototype._initContainer = function () {
+          originalInit.call(this);
+          if (this._container && this._container.getContext) {
+            this._ctx = this._container.getContext('2d', { 
+              willReadFrequently: true 
+            });
+          }
+        };
+      }
       if (this.map) return;
-
+      patchLeafletCanvas(); // 添加补丁
       const container = document.getElementById('map-container');
       container.style.width = '100%';
       container._leaflet_id = null;
@@ -536,7 +590,7 @@ export default {
           this.heatLayer.setLatLngs(points);
           this.heatLayer.redraw();
         }
-      },
+    },
 
     getIntensityColor(intensity) {
       return this.intensityRanges.find(range => 
@@ -784,5 +838,21 @@ export default {
 
 .leaflet-container a.leaflet-control-attribution-leaflet {
   pointer-events: none !important;
+}
+
+/* 确保监控图标不与图例重叠 */
+.cache-monitor {
+  position: fixed;
+  bottom: 80px;  /* 原为20px */
+  left: 20px;
+  z-index: 9999;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .cache-monitor {
+    bottom: 60px;
+    transform: scale(0.8);
+  }
 }
 </style>

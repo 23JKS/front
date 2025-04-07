@@ -1,5 +1,5 @@
 <template>
-    <div class="under-development">
+    <!-- <div class="under-development"> -->
       
       
       <div class="operation-history">
@@ -19,7 +19,7 @@
           </div>
         </div>
       </div>
-    </div>
+    <!-- </div> -->
   </template>
   <script>
   import { mapState } from 'vuex';

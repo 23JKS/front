@@ -11,7 +11,7 @@
             <li>热浪事件分析看板</li>
           </router-link>
           <router-link 
-            to="/under-development" 
+            to="/operation_record" 
             class="menu-item"
             active-class="active">
             <li>操作记录 </li>

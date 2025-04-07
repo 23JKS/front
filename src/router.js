@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import Task1 from './views/Task1/Task1.vue';
 import Task2 from './views/Task2/Task2.vue';
 import Task3 from './views/Task3/Task3.vue';
-import UnderDevelopment from './views/Task3/UnderDevelopment.vue';
+import operation_record from './views/Task3/operation_record.vue';
 import MainLayout from './layout/MainLayout.vue';
 // import Task3 from './views/Task3/index.vue';
 const routes = [
@@ -20,9 +20,9 @@ const routes = [
         component: Task3,
       },
       {
-        path: '/under-development',
-        name: 'UnderDevelopment',
-        component: UnderDevelopment,
+        path: '/operation_record',
+        name: 'operation_record',
+        component: operation_record,
       }
     ]
   },
