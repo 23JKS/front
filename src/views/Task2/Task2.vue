@@ -342,6 +342,7 @@ export default {
           // 将数据存储到缓存中
           await this.cacheManager.set(tileKey, data);
         } else {
+          
           console.log('从缓存加载数据...');
         }
 

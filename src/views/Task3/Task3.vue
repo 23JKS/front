@@ -1,6 +1,4 @@
 <template>
-  
-    
    <!-- 右侧内容区 -->
    <div class="main-content">
       <div class="dashboard-container">
@@ -43,6 +41,10 @@
           <div class="chart-card full-width">
             <h3>事件时间线分析</h3>
             <div ref="timelineChartRef" class="chart"></div>
+          </div>
+          <div class="chart-card full-width">
+            <h3>盐度异常与热浪强度关联分析</h3>
+            <div ref="salinityChartRef" class="chart"></div>
           </div>
         </div>
       </div>
@@ -175,7 +177,8 @@ export default {
           endDate: item.end_date,
           vortexRatio: Number(item.vortex_coverage_ratio),
           heatFlux: Number(item.mean_heat_flux),
-          windSpeed: Number(item.mean_wind)
+          windSpeed: Number(item.mean_wind),
+          cumulativeSalinity: Number(item.cumulative_salinity_anomaly) || 0, // 新增盐度字段
         }))
         .filter(item => 
           !isNaN(item.duration) && 
@@ -270,6 +273,61 @@ export default {
             }
           }]
         })
+
+        // 盐度关联分析散点图
+      this.createChart('salinityChartRef', {
+        tooltip: {
+          trigger: 'item',
+          formatter: params => `
+            事件ID: #${params.data.eventId}<br>
+            盐度累积量: ${params.data.value[0].toFixed(1)}<br>
+            热浪强度: ${params.data.value[1].toFixed(1)}<br>
+            持续天数: ${params.data.duration}天
+          `
+        },
+        xAxis: {
+          type: 'value',
+          name: '前30天盐度异常累积量',
+          nameLocation: 'middle',
+          nameGap: 30,
+          axisLabel: { formatter: '{value} unit' }
+        },
+        yAxis: {
+          type: 'value',
+          name: '最大热强度异常值',
+          nameLocation: 'middle',
+          nameGap: 40
+        },
+        visualMap: {
+          type: 'continuous',
+          min: Math.min(...this.eventsData.map(d => d.duration)),
+          max: Math.max(...this.eventsData.map(d => d.duration)),
+          dimension: 2,
+          inRange: { color: ['#2463eb', '#70e0b2'] },
+          right: 20,
+          text: ['长持续', '短持续']
+        },
+        series: [{
+          type: 'scatter',
+          data: this.eventsData.map(d => ({
+            value: [d.cumulativeSalinity, d.maxAnomaly, d.duration],
+            eventId: d.id,
+            duration: d.duration
+          })),
+          symbolSize: d => Math.sqrt(d[2]) * 4,
+          itemStyle: {
+            opacity: 0.8,
+            borderColor: '#fff',
+            borderWidth: 1
+          },
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowColor: 'rgba(0,0,0,0.3)'
+            }
+          }
+        }]
+      });
 
         // 时间线散点图
         this.createChart('timelineChartRef', {
@@ -532,5 +590,11 @@ h1 {
   h1 {
     font-size: 1.8rem;
   }
+}
+.full-width {
+  grid-column: 1 / -1;
+}
+.chart-card h3 {
+  font-size: 1.2rem;  /* 统一标题大小 */
 }
 </style>

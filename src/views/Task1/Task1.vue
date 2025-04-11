@@ -192,8 +192,6 @@ export default {
       }
       return tiles;
     },
-        // 更新区块加载状态
-    // 修改updateTiles方法（约215行）
     async updateTiles() {
       // 暂停执行直到地图初始化完成
       if (!this.map) {

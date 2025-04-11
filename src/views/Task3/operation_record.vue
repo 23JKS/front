@@ -1,7 +1,4 @@
-<template>
-    <!-- <div class="under-development"> -->
-      
-      
+<template>    
       <div class="operation-history">
         <h3>操作历史记录</h3>
         <div v-if="operations.length === 0" class="no-records">
@@ -19,7 +16,7 @@
           </div>
         </div>
       </div>
-    <!-- </div> -->
+    
   </template>
   <script>
   import { mapState } from 'vuex';
