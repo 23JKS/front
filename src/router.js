@@ -23,7 +23,8 @@ const routes = [
         path: '/operation_record',
         name: 'operation_record',
         component: operation_record,
-      }
+      },
+    
     ]
   },
  

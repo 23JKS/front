@@ -1,91 +1,83 @@
 <template>
   <div class="heatwave-vis">
-    <!-- 控制面板 -->
+    <!-- 信息面板 -->
+    <heatwave-info-panel
+      ref="infoPanel"
+      v-if="selectedEvent"
+      :selected-event="selectedEvent"
+      @close="selectedEvent = null"
+      class="info-panel-wrapper"
+      :class="{ hidden: !selectedEvent }"
+      v-on="debugEventListeners"
+      @click="handlePanelClick"
+    />
+    <!-- 悬浮式控制面板 -->
     <div class="control-panel">
-      <el-button-group>
-         <el-button type="success" @click="toggleGlobalAnimation">
-           {{ isGlobalPlaying ? '⏸ 暂停动态图' : '🌊 播放动态图' }}
-         </el-button>
-         <el-button @click="resetGlobalAnimation">🗑️ 清除动态图</el-button>
-       </el-button-group>
-
-      <el-date-picker
-        v-model="timeRange"
-        type="daterange"
-        range-separator="至"
-        start-placeholder="开始日期"
-        end-placeholder="结束日期"
-        value-format="YYYY-MM-DD"
-        @change="filterEvents"
-      />
-      
-      <div class="slider-container">
-        <span>最小持续时间：{{ minDuration }}天</span>
-        <el-slider
-          v-model="minDuration"
-          :min="1"
-          :max="90"
-          :step="1"
-          @change="filterEvents"
-        />
-      </div>
-     <!-- 增强的动画控制面板 -->
-     <div class="animation-control" v-if="currentAnimation">
-        <div class="animation-info">
-          <h4>动画控制</h4>
-          <div>当前事件: #{{ currentAnimation.feature.properties.event_id }}</div>
-          <div>总帧数: {{ currentAnimation.polygons.length }}</div>
+      <div class="control-group">
+        <!-- 动画控制 -->
+        <div class="control-item">
+          <el-button-group class="full-width">
+            <el-button type="primary" @click="toggleGlobalAnimation">
+              {{ isGlobalPlaying ? '⏸ 暂停' : '▶️ 播放' }}
+            </el-button>
+            <el-button @click="resetGlobalAnimation">⏹ 停止</el-button>
+          </el-button-group>
         </div>
-        
-        <el-slider
-          v-model="animationProgress"
-          :min="0"
-          :max="100"
-          :step="1"
-          @change="updateAnimationPosition"
-        />
-        
-        <el-button-group>
-          <el-button @click="toggleAnimation" type="primary">
-            {{ isPlaying ? '⏸ 暂停' : '▶️ 播放' }}
-          </el-button>
-          <el-button @click="stopAnimation">⏹ 停止</el-button>
-          <el-button @click="restartAnimation">🔄 重播</el-button>
-        </el-button-group>
-        
-        <div class="speed-control">
-          <span>播放速度:</span>
+        <!-- 时间选择 -->
+        <div class="control-item date-picker-wrapper">
+          <el-date-picker
+            v-model="timeRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            @change="filterEvents"
+            popper-class="ventusky-datepicker"
+          />
+        </div>
+        <!-- 持续时间控制 -->
+        <div class="control-item slider-container">
+          <div class="slider-label">持续时间 ≥ {{ minDuration }}天</div>
           <el-slider
-            v-model="animationSpeed"
-            :min="0.5"
-            :max="3"
-            :step="0.5"
-            style="width: 200px"
+            v-model="minDuration"
+            :min="1"
+            :max="90"
+            :step="1"
+            @change="filterEvents"
           />
         </div>
       </div>
     </div>
-
-    <!-- 地图容器 -->
+    <!-- 全屏地图 -->
     <div id="map-container"></div>
-
-    <!-- 速度图例 -->
+    <!-- 图例 -->
     <div class="legend speed-legend">
+      <div class="legend-title">移动速度图例</div>
       <div v-for="(item, index) in speedRanges" :key="index" class="legend-item">
         <div class="color-box" :style="{ backgroundColor: item.color }"></div>
         <span>{{ item.label }}</span>
       </div>
     </div>
-      <!-- 添加时间指示器 -->
-      <div class="timeline-indicator" v-if="isGlobalPlaying">
-        当前时间: {{ formattedCurrentDate }}
+    <!-- 时间轴 -->
+    <div class="timeline-container" v-if="isGlobalPlaying">
+      <div class="timeline-bar">
+        <div class="timeline-progress" :style="progressStyle"></div>
       </div>
+      <div class="timeline-label">{{ formattedCurrentDate }}</div>
+    </div>
+    <!-- 自定义缩放控件 -->
+    <div class="custom-zoom-control">
+      <button @click="safeZoomIn">+</button>
+      <button @click="safeZoomOut">-</button>
+    </div>
   </div>
 </template>
 
 <script>
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import HeatwaveInfoPanel from './HeatwaveInfoPanel.vue';
 
 const SPEED_COLORS = {
   low: '#4CAF50',
@@ -95,31 +87,39 @@ const SPEED_COLORS = {
 
 export default {
   name: 'HeatwaveVisualization',
+  components: {
+    HeatwaveInfoPanel
+  },
   data() {
-  
     const defaultStart = new Date(2020, 5, 1); // 2020-06-01
-    const defaultEnd = new Date(2020, 7, 31);   // 2020-08-31
+    const defaultEnd = new Date(2020, 7, 31); // 2020-08-31
     return {
-      loadedTiles: new Set(),       // 已加载的区块标识
-      currentZoom: 4,              // 当前缩放级别
-      tileLayers: new Map(),        // 已加载的图层
-    // 设置2020年6月1日 - 8月31日作为默认时间范围
-      progressStyle: { width: '0%' }, // 初始化进度条样式
+      debugEventListeners: {
+        click: (e) => {
+          console.log('面板点击事件', e);
+          console.log('原生事件:', e.nativeEvent);
+        }
+      },
+      selectedEvent: null,
+      loadedTiles: new Set(),
+      currentZoom: 4,
+      tileLayers: new Map(),
+      progressStyle: { width: '0%' },
       isGlobalPlaying: false,
       globalAnimationInterval: null,
       currentStep: 0,
       maxSteps: 0,
       timelineDates: [],
-      activeLayers: new Map(), // 改为 Map 以跟踪每个事件的图层
-      animationSpeed: 1, 
+      activeLayers: new Map(),
+      animationSpeed: 1,
       currentAnimation: null,
-      currentHighlight: null, // 新增当前高亮要素的引用
+      currentHighlight: null,
       isPlaying: false,
       animationProgress: 0,
       animationInterval: null,
       pathLayer: null,
       markerLayer: null,
-      isMapInitialized: false, // 新增地图初始化状态标记
+      isMapInitialized: false,
       map: null,
       geoJsonLayer: null,
       timeRange: [
@@ -134,37 +134,31 @@ export default {
         { min: 25, max: 50, color: SPEED_COLORS.medium, label: '中速 (25-50 km/d)' },
         { min: 50, max: Infinity, color: SPEED_COLORS.high, label: '高速 (>50 km/d)' }
       ],
-      currentDate: null, // 新增：初始化 currentDate
+      currentDate: null
     };
   },
   computed: {
     formattedCurrentDate() {
       return this.currentDate ? this.currentDate.toLocaleDateString() : '未定义';
-    },
+    }
   },
-  // 修改后的初始化方法
   async mounted() {
     try {
-      // 先初始化地图
+      console.log('面板组件是否存在:', !!this.$refs.infoPanel);
       this.initMap();
       this.map.on('moveend', this.updateTiles);
       this.map.on('zoomend', () => {
         this.currentZoom = this.map.getZoom();
+        console.log('Zoom 级别变化:', this.currentZoom);
         this.updateTiles();
       });
-      // 再加载数据
       await this.loadData();
-      
-      // 最后过滤事件
       this.filterEvents();
-
       console.log('初始化完成');
     } catch (error) {
       console.error('初始化失败:', error);
     }
   },
-  
-  // 在现有speedRanges后添加监听
   watch: {
     animationSpeed() {
       if (this.isGlobalPlaying) {
@@ -174,61 +168,181 @@ export default {
     }
   },
   methods: {
-     // 生成区块唯一标识
-    getTileKey(bounds) {
-      return `${Math.floor(bounds.getSouth()/5)*5}-${Math.floor(bounds.getWest()/5)*5}`;
+    safeZoomIn() {
+      if (this.map && this.isMapInitialized) {
+        console.log('执行 zoomIn');
+        this.map.zoomIn();
+        this.map.invalidateSize();
+      } else {
+        console.warn('地图未初始化，跳过 zoomIn');
+      }
     },
+    safeZoomOut() {
+      if (this.map && this.isMapInitialized) {
+        console.log('执行 zoomOut');
+        this.map.zoomOut();
+        this.map.invalidateSize();
+      } else {
+        console.warn('地图未初始化，跳过 zoomOut');
+      }
+    },
+    handlePanelClick(e) {
+      console.log('处理面板点击事件', e);
+      e.stopPropagation();
+      this.$nextTick(() => {
+        if (this.map) {
+          this.map.invalidateSize();
+          console.log('面板点击后调整地图大小');
+        }
+      });
+    },
+    handleFeatureClick(feature, layer) {
+      try {
+        console.log('点击事件数据:', {
+          eventId: feature.properties?.event_id,
+          startDate: feature.properties?.start_date,
+          duration: feature.properties?.duration,
+          maxAnomaly: feature.properties?.max_anomaly,
+          dailyInfoLength: feature.properties?.daily_info?.length
+        });
 
-    // 获取当前需要加载的区块
+        if (!feature.properties || !feature.properties.event_id) {
+          throw new Error('无效的 feature 数据');
+        }
+
+        // 规范化 selectedEvent
+        this.selectedEvent = {
+          type: feature.type,
+          properties: {
+            event_id: feature.properties.event_id ?? 'unknown',
+            start_date: feature.properties.start_date instanceof Date
+              ? feature.properties.start_date
+              : new Date(feature.properties.start_date),
+            duration: feature.properties.duration ?? 0,
+            max_anomaly: feature.properties.max_anomaly ?? 0, // 默认值
+            cumulative_anomaly: feature.properties.cumulative_anomaly ?? 0,
+            centroid_change_rate: feature.properties.centroid_change_rate ?? 0,
+            daily_info: Array.isArray(feature.properties.daily_info)
+              ? feature.properties.daily_info.map(info => ({
+                  ...info,
+                  date: info.date instanceof Date ? info.date : new Date(info.date)
+                }))
+              : []
+          },
+          geometry: feature.geometry
+        };
+
+        console.log('更新 selectedEvent:', this.selectedEvent);
+
+        // 高亮图层
+        if (this.currentHighlight) {
+          this.currentHighlight.setStyle(this.currentHighlight.originalStyle);
+        }
+        layer.setStyle({
+          weight: 5,
+          opacity: 1,
+          color: this.getSpeedColor(feature.properties.speed)
+        }).bringToFront();
+        this.currentHighlight = layer;
+
+        this.$nextTick(() => {
+          if (this.$refs.infoPanel) {
+            const panelEl = this.$refs.infoPanel.$el;
+            panelEl.style.zIndex = '2000';
+            panelEl.style.pointerEvents = 'auto';
+            console.log('面板状态:', {
+              exists: !!panelEl,
+              zIndex: panelEl.style.zIndex,
+              display: panelEl.style.display,
+              selectedEvent: !!this.selectedEvent,
+              popupOpen: !!layer.getPopup()?.isOpen(),
+              panelWidth: panelEl.offsetWidth
+            });
+            if (this.map) {
+              this.map.invalidateSize();
+              console.log('点击要素后调整地图大小');
+            }
+          } else {
+            console.warn('infoPanel 未找到，可能尚未渲染');
+          }
+        });
+      } catch (e) {
+        console.error('点击处理异常:', e);
+        this.selectedEvent = null;
+      }
+    },
+    findLayerById(eventId) {
+      let targetLayer = null;
+      if (this.geoJsonLayer) {
+        this.geoJsonLayer.eachLayer(layer => {
+          if (layer.feature?.properties.event_id === eventId) {
+            targetLayer = layer;
+          }
+        });
+      }
+      return targetLayer;
+    },
+    highlightFeature(layer) {
+      if (!layer.originalStyle) {
+        layer.originalStyle = {
+          color: layer.options.color,
+          weight: layer.options.weight,
+          opacity: layer.options.opacity
+        };
+      }
+      layer.setStyle({
+        weight: 5,
+        opacity: 1,
+        color: this.getSpeedColor(layer.feature.properties.speed)
+      });
+      layer.bringToFront();
+      this.currentHighlight = layer;
+    },
+    resetFeatureStyle(layer) {
+      if (layer.originalStyle) {
+        layer.setStyle(layer.originalStyle);
+      }
+      this.currentHighlight = null;
+    },
+    getTileKey(bounds) {
+      return `${Math.floor(bounds.getSouth() / 5) * 5}-${Math.floor(bounds.getWest() / 5) * 5}`;
+    },
     getRequiredTiles() {
+      if (!this.map) return new Set();
       const bounds = this.map.getBounds();
       const tiles = new Set();
-      
-      // 计算可视区域覆盖的区块
-      for (let lat = Math.floor(bounds.getSouth()/5)*5; lat <= bounds.getNorth(); lat +=5) {
-        for (let lng = Math.floor(bounds.getWest()/5)*5; lng <= bounds.getEast(); lng +=5) {
+      for (let lat = Math.floor(bounds.getSouth() / 5) * 5; lat <= bounds.getNorth(); lat += 5) {
+        for (let lng = Math.floor(bounds.getWest() / 5) * 5; lng <= bounds.getEast(); lng += 5) {
           tiles.add(`${lat}-${lng}`);
         }
       }
       return tiles;
     },
     async updateTiles() {
-      // 暂停执行直到地图初始化完成
-      if (!this.map) {
+      if (!this.map || !this.isMapInitialized) {
+        console.warn('地图未初始化，跳过 updateTiles');
         await new Promise(resolve => setTimeout(resolve, 100));
-        return this.updateTiles();
+        return;
       }
-
       const bounds = this.map.getBounds();
       const zoom = this.map.getZoom();
-      
-      // 根据缩放级别动态调整区块大小
-      const gridSize = zoom > 6 ? 2 : 5; // 高缩放级别使用更小网格
-      
+      const gridSize = zoom > 6 ? 2 : 5;
       const tiles = new Set();
-      for (let lat = Math.floor(bounds.getSouth()/gridSize)*gridSize; 
-          lat <= bounds.getNorth(); 
-          lat += gridSize) {
-        for (let lng = Math.floor(bounds.getWest()/gridSize)*gridSize;
-            lng <= bounds.getEast();
-            lng += gridSize) {
+      for (let lat = Math.floor(bounds.getSouth() / gridSize) * gridSize; lat <= bounds.getNorth(); lat += gridSize) {
+        for (let lng = Math.floor(bounds.getWest() / gridSize) * gridSize; lng <= bounds.getEast(); lng += gridSize) {
           tiles.add(`${lat}-${lng}`);
         }
       }
+      console.log('更新瓦片:', tiles);
     },
-    // 加载单个区块数据
     async loadTileData(lat, lng) {
       try {
-        // 加载本地GeoJSON文件
         const response = await fetch('/mock/api/heatwaves.geojson');
         const fullData = await response.json();
-        
-        // 根据区块范围过滤要素
         const west = lng;
         const east = lng + 5;
         const south = lat;
         const north = lat + 5;
-
         const filteredFeatures = fullData.features.filter(feature => {
           const [minLng, minLat, maxLng, maxLat] = this.getFeatureBBox(feature);
           return (
@@ -238,69 +352,80 @@ export default {
             maxLat > south
           );
         });
-
+        if (!this.map) return L.layerGroup();
         return L.geoJSON({
           type: "FeatureCollection",
           features: filteredFeatures
         }, {
           style: this.getFeatureStyle,
           onEachFeature: this.bindFeatureEvents,
-          coordsToLatLng: coords => L.latLng(coords[1], coords[0]) // 转换坐标顺序
+          coordsToLatLng: coords => L.latLng(coords[1], coords[0])
         }).addTo(this.map);
-
       } catch (error) {
         console.error('本地数据加载失败:', error);
         return L.layerGroup();
       }
     },
-
-    // 统一要素样式
-      // 新增方法：获取要素的边界框
     getFeatureBBox(feature) {
       const coords = feature.geometry.coordinates[0];
       let minLng = Infinity, maxLng = -Infinity;
       let minLat = Infinity, maxLat = -Infinity;
-      
       coords.forEach(([lng, lat]) => {
         minLng = Math.min(minLng, lng);
         maxLng = Math.max(maxLng, lng);
         minLat = Math.min(minLat, lat);
         maxLat = Math.max(maxLat, lat);
       });
-      
       return [minLng, minLat, maxLng, maxLat];
     },
-    // 统一事件绑定
     bindFeatureEvents(feature, layer) {
-      layer.bindPopup(this.createPopupContent(feature.properties));
-      
-      layer.on({
-        click: this.handleFeatureClick,
-        mouseover: this.handleFeatureHover,
-        mouseout: this.handleFeatureLeave
+      console.log(`绑定事件到要素 ${feature.properties.event_id}`);
+      layer.options.interactive = true;
+      layer.off('click');
+      layer.on('click', (e) => {
+        console.log('图层点击触发:', feature.properties.event_id);
+        L.DomEvent.stopPropagation(e);
+
+        if (feature.properties) {
+          const popupContent = this.createPopupContent(feature.properties);
+          layer.bindPopup(popupContent, {
+            maxWidth: 300,
+            autoPan: true,
+            offset: [0, -10]
+          }).openPopup(e.latlng);
+        }
+
+        this.handleFeatureClick(feature, layer);
+      });
+      layer.on('add', () => {
+        console.log('图层已添加:', layer._leaflet_id);
       });
     },
-    // 在methods中添加
     clearAllLayers() {
-      // 清除静态图层
       if (this.geoJsonLayer) {
         this.geoJsonLayer.remove();
         this.geoJsonLayer = null;
       }
-      
-      // 清除动态图层
       this.activeLayers.forEach(layer => layer.remove());
       this.activeLayers.clear();
-      
-      // 清除其他相关元素
-      if (this.pathLayer) this.map.removeLayer(this.pathLayer);
-      if (this.markerLayer) this.map.removeLayer(this.markerLayer);
+      if (this.pathLayer) {
+        this.pathLayer.remove();
+        this.pathLayer = null;
+      }
+      if (this.markerLayer) {
+        this.markerLayer.remove();
+        this.markerLayer = null;
+      }
+      if (this.map) {
+        this.map.invalidateSize();
+        console.log('清理图层后调整地图大小');
+      }
     },
     toggleGlobalAnimation() {
       this.isGlobalPlaying = !this.isGlobalPlaying;
       console.log('切换动画状态，isGlobalPlaying:', this.isGlobalPlaying);
       if (this.isGlobalPlaying) {
-        this.clearAllLayers(); // 新增：播放前清理所有图层
+        this.clearAllLayers();
         this.startGlobalAnimation();
         console.log('动画开始，isGlobalPlaying:', this.isGlobalPlaying);
       } else {
@@ -308,7 +433,6 @@ export default {
         console.log('动画暂停，isGlobalPlaying:', this.isGlobalPlaying);
       }
     },
-
     startGlobalAnimation() {
       if (!this.timeRange || this.timeRange.length !== 2) {
         this.$message.error('请先选择有效的时间范围');
@@ -316,36 +440,30 @@ export default {
       }
       const startDate = new Date(this.timeRange[0]);
       const endDate = new Date(this.timeRange[1]);
-
       if (isNaN(startDate) || isNaN(endDate)) {
         this.$message.error('时间范围格式错误');
         return;
       }
-
       this.timelineDates = [];
       let currentDate = new Date(startDate);
       while (currentDate <= endDate) {
         this.timelineDates.push(new Date(currentDate));
         currentDate.setDate(currentDate.getDate() + 1);
       }
-
       console.log('生成时间轴:', {
         start: this.timelineDates[0]?.toISOString(),
-        end: this.timelineDates[this.timelineDates.length-1]?.toISOString(),
+        end: this.timelineDates[this.timelineDates.length - 1]?.toISOString(),
         days: this.timelineDates.length
       });
-
       this.maxSteps = this.timelineDates.length;
       this.currentStep = 0;
-      this.currentDate = this.timelineDates[0]; // 确保 currentDate 被设置
+      this.currentDate = this.timelineDates[0];
       this.progressStyle = { width: '0%' };
-
       this.globalAnimationInterval = setInterval(
         this.updateGlobalAnimation,
         1000 / this.animationSpeed
       );
     },
-    // 判断两个日期是否是同一天
     isSameDay(date1, date2) {
       return (
         date1.getFullYear() === date2.getFullYear() &&
@@ -353,131 +471,139 @@ export default {
         date1.getDate() === date2.getDate()
       );
     },
-
-      // 修改updateGlobalAnimation方法（关键部分）
     updateGlobalAnimation() {
+      const convertCoords = (coords) => {
+        return coords.map(item => {
+          if (Array.isArray(item[0])) return convertCoords(item);
+          return [item[1], item[0]];
+        });
+      };
+      const calculateEventEnd = (startDate, duration) => {
+        const end = new Date(startDate);
+        end.setUTCDate(end.getUTCDate() + duration);
+        return end;
+      };
       if (this.currentStep >= this.maxSteps) {
         this.resetGlobalAnimation();
         return;
       }
-
       const currentDate = this.timelineDates[this.currentStep];
       const currentISODate = this.formatDate(currentDate);
-
-      // 清理过期图层（严格生命周期控制）
-      this.activeLayers.forEach((layer, eventId) => {
+      this.activeLayers.forEach((layers, eventId) => {
         const event = this.filteredEvents.find(e => e.properties.event_id === eventId);
         if (!event) return;
-
-        // 准确计算事件结束日期（包含最后一整天）
-        const eventEndDate = new Date(event.properties.start_date);
-        eventEndDate.setDate(eventEndDate.getDate() + event.properties.duration - 1); // 包含最后一天
-        const eventEndISODate = this.formatDate(eventEndDate);
-
-        // 严格过期判断（超过结束日期才移除）
-        if (currentISODate > eventEndISODate) {
-          layer.remove();
+        const eventEndDate = calculateEventEnd(event.properties.start_date, event.properties.duration);
+        if (currentISODate > this.formatDate(eventEndDate)) {
+          layers.forEach(layer => layer.remove());
           this.activeLayers.delete(eventId);
         }
       });
-
-      // 创建/更新多边形（禁用自动缩放）
       this.filteredEvents.forEach(event => {
         const startDate = new Date(event.properties.start_date);
-        const startISODate = this.formatDate(startDate);
-        const eventEndDate = new Date(startDate);
-        eventEndDate.setDate(startDate.getDate() + event.properties.duration - 1);
-        const eventEndISODate = this.formatDate(eventEndDate);
-
-        // 仅处理当前日期范围内的事件
-        if (currentISODate >= startISODate && currentISODate <= eventEndISODate) {
-          const dayInfo = event.properties.daily_info.find(d => 
-            this.formatDate(new Date(d.date)) === currentISODate
-          );
-
-          // 添加多边形可见性调试
-          console.log(`事件#${event.properties.event_id} ${currentISODate}`, {
-            start: startISODate,
-            end: eventEndISODate,
-            exists: !!dayInfo?.geometry?.coordinates
-          });
-
-          if (dayInfo?.geometry?.coordinates) {
-            // 转换坐标顺序 [经度, 纬度] => [纬度, 经度]
-            const latlngs = dayInfo.geometry.coordinates[0].map(c => [c[1], c[0]]);
-
-            if (this.activeLayers.has(event.properties.event_id)) {
-              // 更新现有多边形（保持当前位置）
-              const polygon = this.activeLayers.get(event.properties.event_id);
-              polygon.setLatLngs([latlngs]);
-            } else {
-              // 创建新多边形（禁用弹出动画）
-              const polygon = L.polygon([latlngs], {
-                color: this.getSpeedColor(event.properties.speed), // 边框颜色与填充色一致
-                weight: 1,          // 减少边框宽度
-                opacity: 0.5,       // 降低边框透明度
-                fillColor: this.getSpeedColor(event.properties.speed),
-                fillOpacity: 0.7
-              }).addTo(this.map);
-              
-              this.activeLayers.set(event.properties.event_id, polygon);
+        const eventEndDate = calculateEventEnd(startDate, event.properties.duration);
+        if (currentDate < startDate || currentDate > eventEndDate) return;
+        const dayInfos = event.properties.daily_info.filter(d =>
+          this.formatDate(new Date(d.date)) === currentISODate
+        );
+        if (dayInfos.length === 0) {
+          console.warn(`[${event.properties.event_id}] 无当日数据: ${currentISODate}`);
+          return;
+        }
+        let allGeometries = [];
+        dayInfos.forEach(dayInfo => {
+          const geometries = this.parseMultiPolygon(dayInfo.geometry);
+          allGeometries = [...allGeometries, ...geometries];
+        });
+        if (this.activeLayers.has(event.properties.event_id)) {
+          const oldLayers = this.activeLayers.get(event.properties.event_id);
+          oldLayers.forEach(layer => layer.remove());
+        }
+        const newPolygons = allGeometries.map(coords => {
+          try {
+            const latlngs = convertCoords(coords);
+            if (latlngs.flat(2).length < 6) {
+              console.warn(`[${event.properties.event_id}] 无效坐标数量`);
+              return null;
             }
+            return L.polygon(latlngs, {
+              color: this.getSpeedColor(event.properties.speed),
+              weight: 2,
+              opacity: 0.9,
+              fillColor: this.getSpeedColor(event.properties.speed),
+              fillOpacity: 0.5,
+              className: `event-${event.properties.event_id}`
+            });
+          } catch (e) {
+            console.error(`[${event.properties.event_id}] 创建失败:`, e);
+            return null;
           }
+        }).filter(Boolean);
+        if (newPolygons.length > 0 && this.map) {
+          newPolygons.forEach(p => p.addTo(this.map));
+          this.activeLayers.set(event.properties.event_id, newPolygons);
+          console.log(`[${event.properties.event_id}] 创建 ${newPolygons.length} 个多边形`);
         }
       });
-
- 
-
-      // 强制重绘图层
-      this.map.invalidateSize({ animate: false });
-
-      this.currentDate = currentDate;
+      if (this.map) {
+        requestAnimationFrame(() => {
+          this.map.invalidateSize({ animate: true });
+        });
+      }
       this.currentStep++;
-      // 在 updateGlobalAnimation 末尾添加
+      this.progressStyle = { width: `${(this.currentStep / this.maxSteps) * 100}%` };
+      this.currentDate = this.timelineDates[this.currentStep];
       if (this.currentStep >= this.maxSteps) {
         this.resetGlobalAnimation();
-        this.$message.success('播放完成，已恢复静态视图');
       }
     },
-    // 新增方法：获取事件结束日期
+    parseMultiPolygon(geometry) {
+      if (!geometry?.coordinates) return [];
+      const flatten = (arr, depth = 0) => {
+        if (depth > 3) return arr;
+        return arr.flatMap(item =>
+          Array.isArray(item[0][0]) ? flatten(item, depth + 1) : item
+        );
+      };
+      switch (geometry.type) {
+        case 'MultiPolygon':
+          return flatten(geometry.coordinates);
+        case 'Polygon':
+          return [geometry.coordinates];
+        case 'GeometryCollection':
+          return geometry.geometries.flatMap(g => this.parseMultiPolygon(g));
+        default:
+          console.warn('未知几何类型:', geometry.type);
+          return [];
+      }
+    },
     getEventEndDate(event) {
       const startDate = new Date(event.properties.start_date);
       const endDate = new Date(startDate);
       endDate.setDate(startDate.getDate() + event.properties.duration);
       return endDate;
     },
-
-    // 新增方法：格式化日期为YYYY-MM-DD
     formatDate(date) {
       return date.toISOString().split('T')[0];
-      // 或用更可靠的方式：
-      // const pad = n => n.toString().padStart(2,'0');
-      // return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
     },
-
     pauseGlobalAnimation() {
       clearInterval(this.globalAnimationInterval);
       this.isGlobalPlaying = false;
     },
-
-    // 修改 resetGlobalAnimation 方法
     resetGlobalAnimation() {
       this.pauseGlobalAnimation();
-      
-      // 清除动态图层
-      this.activeLayers.forEach(layer => layer.remove());
+      this.activeLayers.forEach(layers => {
+        layers.forEach(layer => layer.remove());
+      });
       this.activeLayers.clear();
-      
-      // 恢复静态视图
-      this.filterEvents(); // 重新触发筛选和渲染
-      this.safeFitBounds(); // 自动适应视图
-      
-      // 重置进度指示
+      this.filterEvents();
+      this.safeFitBounds();
       this.currentStep = 0;
       this.currentDate = null;
       this.progressStyle = { width: '0%' };
+      if (this.map) {
+        this.map.invalidateSize();
+      }
     },
-    // 添加 toggleAnimation 方法
     toggleAnimation() {
       this.isPlaying = !this.isPlaying;
       if (this.isPlaying) {
@@ -486,66 +612,53 @@ export default {
         clearInterval(this.animationInterval);
       }
     },
-
-    // 新增动画相关方法
     showMovementAnimation(feature) {
       this.clearAnimation();
-      
       const days = feature.properties.daily_info;
       if (!days || days.length < 2) return;
-
-      // 存储多边形动画数据
       const polygons = days.map(day => {
         try {
-          return L.polygon(day.boundary.coordinates[0], {
-            color: this.getSpeedColor(feature.properties.speed), // 保持原色
+          return L.polygon(day.geometry.coordinates[0], {
+            color: this.getSpeedColor(feature.properties.speed),
             weight: 2,
             opacity: 0.8,
             fillOpacity: 0.2
           });
         } catch (e) {
-          console.warn('无效的边界数据:', day.boundary);
+          console.warn('无效的边界数据:', day.geometry);
           return null;
         }
       }).filter(Boolean);
-
-      // 创建路径和标记（保持原有）
       const pathPoints = days.map(d => [d.centroid.lat, d.centroid.lon]);
-      this.pathLayer = L.polyline(pathPoints, {
-        color: '#ff0000',
-        weight: 3
-      }).addTo(this.map);
-
-      const marker = L.marker(pathPoints[0], {
-        icon: L.divIcon({
-          className: 'animated-marker',
-          html: '<div class="pulsing-dot"></div>',
-          iconSize: [20, 20]
-        })
-      }).addTo(this.map);
-
-      // 动画状态
-      this.currentAnimation = {
-        feature,
-        currentIndex: 0,
-        polygons,
-        marker,
-        currentPolygon: null
-      };
-
-      // 初始显示第一个多边形
-      if (polygons.length > 0) {
-        this.currentAnimation.currentPolygon = polygons[0].addTo(this.map);
+      if (this.map) {
+        this.pathLayer = L.polyline(pathPoints, {
+          color: '#ff0000',
+          weight: 3
+        }).addTo(this.map);
+        const marker = L.marker(pathPoints[0], {
+          icon: L.divIcon({
+            className: 'animated-marker',
+            html: '<div class="pulsing-dot"></div>',
+            iconSize: [20, 20]
+          })
+        }).addTo(this.map);
+        this.currentAnimation = {
+          feature,
+          currentIndex: 0,
+          polygons,
+          marker,
+          currentPolygon: null
+        };
+        if (polygons.length > 0) {
+          this.currentAnimation.currentPolygon = polygons[0].addTo(this.map);
+        }
+        this.toggleAnimation();
       }
-
-      this.toggleAnimation();
     },
     playNextStep() {
       if (!this.isPlaying) return;
-
       const anim = this.currentAnimation;
-      const interval = 1000; // 1秒间隔
-
+      const interval = 1000;
       this.animationInterval = setInterval(() => {
         if (anim.currentIndex < anim.polygons.length - 1) {
           this.updateAnimationFrame(anim);
@@ -555,7 +668,7 @@ export default {
       }, interval);
     },
     updateAnimationFrame(anim) {
-      if (anim.currentPolygon) {
+      if (anim.currentPolygon && this.map) {
         this.map.removeLayer(anim.currentPolygon);
       }
       anim.currentIndex++;
@@ -564,127 +677,135 @@ export default {
       anim.marker.setLatLng([point.lat, point.lon]);
       this.animationProgress = (anim.currentIndex / (anim.polygons.length - 1)) * 100;
     },
-   
-   
-    updateMarkerPosition() {
-      const { currentIndex, feature } = this.currentAnimation;
-      const point = feature.properties.daily_info[currentIndex].centroid;
-      this.markerLayer.setLatLng([point.lat, point.lon]);
-    },
-
     stopAnimation() {
       this.isPlaying = false;
       clearInterval(this.animationInterval);
       this.animationProgress = 0;
       this.currentAnimation = null;
     },
-
     clearAnimation() {
-      if (this.pathLayer) this.map.removeLayer(this.pathLayer);
+      if (this.pathLayer && this.map) {
+        this.map.removeLayer(this.pathLayer);
+        this.pathLayer = null;
+      }
       if (this.currentAnimation) {
-        if (this.currentAnimation.marker) this.map.removeLayer(this.currentAnimation.marker);
-        if (this.currentAnimation.currentPolygon) this.map.removeLayer(this.currentAnimation.currentPolygon);
-        this.currentAnimation.polygons?.forEach(p => this.map.removeLayer(p));
+        if (this.currentAnimation.marker && this.map) {
+          this.map.removeLayer(this.currentAnimation.marker);
+        }
+        if (this.currentAnimation.currentPolygon && this.map) {
+          this.map.removeLayer(this.currentAnimation.currentPolygon);
+        }
+        this.currentAnimation.polygons?.forEach(p => {
+          if (this.map) this.map.removeLayer(p);
+        });
       }
       this.stopAnimation();
     },
-
-    // 数据加载方法重构
     async loadData() {
       try {
         const response = await fetch('/data/final_heatwaves.geojson');
+        if (!response.ok) {
+          throw new Error(`HTTP 错误: ${response.status}`);
+        }
         let rawData = await response.text();
-
-        // 增强数据预处理
         rawData = this.fixGeoJSONStructure(rawData);
-        
-        // 调试输出
         console.log('预处理后的数据片段:', rawData.substring(0, 500));
-        
         const data = JSON.parse(rawData);
-        
-        // 处理features
-        this.allEvents = data.features.map(feature => {
-          const props = feature.properties;
-          
-          // 转换daily_info
-          const dailyInfo = this.parseDailyInfo(props.daily_info);
-        const validDays = dailyInfo.filter(d => d.centroid);
-        const speed = validDays.length > 1 ? 
-            this.calculateSpeed(validDays, Number(props.duration)) : 0;  // 添加参数转换
+
+        // 规范化数据
+        this.allEvents = data.features.map((feature, index) => {
+          const props = feature.properties || {};
+          const dailyInfo = this.parseDailyInfo(props.daily_info || '[]');
+          const validDays = dailyInfo.filter(d => d.centroid && d.geometry);
+          const speed = validDays.length > 1
+            ? this.calculateSpeed(validDays, Number(props.duration) || 1)
+            : 0;
 
           return {
             type: 'Feature',
-            geometry: feature.geometry,
+            geometry: feature.geometry || { type: 'Polygon', coordinates: [] },
             properties: {
-              event_id: props.event_id,
-              start_date: new Date(props.start_date),
-              duration: props.duration,
-              daily_info: dailyInfo,
+              event_id: props.event_id ?? `unknown_${index}`,
+              start_date: props.start_date ? new Date(props.start_date) : new Date(),
+              duration: Number(props.duration) || 0,
+              max_anomaly: Number(props.max_anomaly) || 0, // 确保 max_anomaly 存在
+              cumulative_anomaly: Number(props.cumulative_anomaly) || 0,
+              centroid_change_rate: Number(props.centroid_change_rate) || 0,
+              daily_info: validDays,
               speed: speed,
-              centroid: validDays[0]?.centroid || null
+              centroid: validDays[0]?.centroid || { lat: 0, lon: 0 }
             }
           };
-        }).filter(event => 
-          event.properties.daily_info?.length > 0
-        );
+        }).filter(event => {
+          const isValid = event.properties.daily_info.length > 0 &&
+                         !isNaN(event.properties.start_date.getTime());
+          if (!isValid) {
+            console.warn('过滤无效事件:', event.properties.event_id);
+          }
+          return isValid;
+        });
 
-        console.log('数据加载成功', this.allEvents);
+        console.log('数据加载成功', {
+          totalEvents: this.allEvents.length,
+          sampleEvent: this.allEvents[0]
+        });
         this.filterEvents();
-
       } catch (error) {
         console.error('数据加载失败:', error);
         this.$message.error('数据加载失败: ' + error.message);
       }
     },
-    // 增强的GeoJSON修复方法
     fixGeoJSONStructure(str) {
-          return str
-            .replace(/'/g, '"')
-            .replace(/None/g, 'null')
-            .replace(/Decimal\(("[^"]+")\)/g, '$1')
-            .replace(/\(/g, '[').replace(/\)/g, ']')
-            .replace(/,\s*]/g, ']')
-            .replace(/\[\s*,/g, '[')
-            .replace(/"daily_info":\s*"\[(.*?)\]"/gs, (match, inner) => {
-              return `"daily_info": [${inner
-                .replace(/(\w+):/g, '"$1":')
-                .replace(/("[^"]+")\s*:/g, '$1:')
-              }]`;
-            });
-        },
-          // 解析daily_info数据
+      return str
+        .replace(/'/g, '"')
+        .replace(/None/g, 'null')
+        .replace(/Decimal\(("[^"]+")\)/g, '$1')
+        .replace(/\(/g, '[').replace(/\)/g, ']')
+        .replace(/,\s*]/g, ']')
+        .replace(/\[\s*,/g, '[')
+        .replace(/"daily_info":\s*"\[(.*?)\]"/gs, (match, inner) => {
+          return `"daily_info": [${inner
+            .replace(/(\w+):/g, '"$1":')
+            .replace(/("[^"]+")\s*:/g, '$1:')
+          }]`;
+        });
+    },
     parseDailyInfo(dailyInfo) {
+      if (typeof dailyInfo === 'string') {
+        try {
+          dailyInfo = JSON.parse(dailyInfo);
+        } catch (e) {
+          console.warn('解析 daily_info 失败:', e);
+          return [];
+        }
+      }
       return dailyInfo.map(day => {
         try {
-          // 转换坐标结构
-          const coordinates = this.normalizeCoordinates(day.geometry?.coordinates);
-          
+          const coordinates = this.normalizeCoordinates(day.geometry?.coordinates || []);
           return {
-            date: day.date,
-            centroid: {
-              lat: day.centroid.lat,
-              lon: day.centroid.lon
-            },
+            date: day.date ? new Date(day.date) : null,
+            centroid: day.centroid ? {
+              lat: Number(day.centroid.lat) || 0,
+              lon: Number(day.centroid.lon) || 0
+            } : null,
             geometry: coordinates.length > 0 ? {
               type: 'Polygon',
               coordinates: coordinates
-            } : null
+            } : null,
+            area_km2: Number(day.area_km2) || 0,
+            max_anomaly: Number(day.max_anomaly) || 0
           };
         } catch (e) {
           console.warn('每日数据解析失败:', e);
           return null;
         }
-      }).filter(Boolean);
+      }).filter(day => day && day.date && !isNaN(day.date.getTime()) && day.centroid && day.geometry);
     },
-     // 标准化坐标格式
-     normalizeCoordinates(coords) {
+    normalizeCoordinates(coords) {
       const process = (arr, depth = 0) => {
-        if (depth > 3) return arr; // 防止无限递归
-        
+        if (depth > 3) return arr;
         return arr.map(item => {
           if (Array.isArray(item)) {
-            // 转换坐标顺序为 [lat, lng]
             if (depth === 2 && item.length === 2) {
               return [item[1], item[0]];
             }
@@ -693,7 +814,6 @@ export default {
           return item;
         });
       };
-      
       try {
         return process(coords || []);
       } catch (e) {
@@ -701,34 +821,13 @@ export default {
         return [];
       }
     },
-    // 增强的备用解析
-    fallbackParse(str) {
-      const results = [];
-      const pattern = /"date": "(\d{4}-\d{2}-\d{2})".*?"lon": ([\d.]+).*?"lat": ([\d.]+)/g;
-      
-      let match;
-      while ((match = pattern.exec(str)) !== null) {
-        results.push({
-          date: match[1],
-          centroid: {
-            lon: parseFloat(match[2]),
-            lat: parseFloat(match[3])
-          }
-        });
-      }
-      return results;
-    },
-    // 计算移动速度
     calculateSpeed(dailyInfo, duration) {
       if (!dailyInfo || dailyInfo.length < 2 || duration < 1) return 0;
-
       let totalDistance = 0;
       for (let i = 1; i < dailyInfo.length; i++) {
-        const prev = dailyInfo[i-1].centroid;
+        const prev = dailyInfo[i - 1].centroid;
         const curr = dailyInfo[i].centroid;
-        
         if (!prev || !curr) continue;
-
         totalDistance += this.haversineDistance(
           [prev.lon, prev.lat],
           [curr.lon, curr.lat]
@@ -736,85 +835,86 @@ export default {
       }
       return totalDistance / duration;
     },
-
-    // 哈弗辛公式计算距离
     haversineDistance(coord1, coord2) {
-      const R = 6371; // 地球半径(km)
+      const R = 6371;
       const dLat = this.toRadians(coord2[1] - coord1[1]);
       const dLon = this.toRadians(coord2[0] - coord1[0]);
-      
-      const a = 
-        Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(this.toRadians(coord1[1])) * 
-        Math.cos(this.toRadians(coord2[1])) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2);
-        
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(this.toRadians(coord1[1])) *
+        Math.cos(this.toRadians(coord2[1])) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     },
-
     toRadians(degrees) {
       return degrees * Math.PI / 180;
     },
-
-    // 初始化地图
     initMap() {
-      // 清理旧地图
-      if (this.map) return;
-
-      // 创建前强制重置容器
-      const container = document.getElementById('map-container');
-      container.style.width = '100%';
-      container._leaflet_id = null; // 清除leaflet缓存
-      // 创建新地图实例
-      this.map = L.map('map-container', {
-        renderer: L.canvas(), // 强制使用Canvas渲染
-        zoomControl: false,
-        preferCanvas: true,
-        dragging: true, // 显式启用拖动
-      }).setView([30, 140], 4);
-
-      // 添加底图
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
-      }).addTo(this.map);
-      // 添加事件监听
-      this.map.on('moveend', this.updateTiles);
-      this.map.on('zoomend', () => {
-        this.currentZoom = this.map.getZoom();
-        this.updateTiles();
-      });
-      // 添加触摸事件监听修复
-      this.map.on('touchstart', (e) => {
-        if (e.originalEvent.touches.length === 1) {
-          this.map.dragging.enable();
-        }
-      });
-      // 添加控件
-      L.control.zoom({ position: 'topright' }).addTo(this.map);
-      this.isMapInitialized = true;
-    },
-    // 增强的渲染方法
-    renderEvents() {
-      if (this.isGlobalPlaying && this.currentAnimation) return; // 仅阻止动画播放时的渲染
-      if (this.isGlobalPlaying) return; // 动态播放时不渲染静态层
-      if (!this.map || typeof this.map.addLayer !== 'function') {
-        console.error('地图实例异常');
+      if (this.map) {
+        console.log('地图已初始化，跳过重复初始化');
         return;
       }
-
-      // 清理旧图层
+      const container = document.getElementById('map-container');
+      if (!container) {
+        console.error('地图容器未找到');
+        return;
+      }
+      container.style.width = '100%';
+      container.style.height = '100%';
+      container._leaflet_id = null;
+      try {
+        this.map = L.map('map-container', {
+          renderer: L.canvas(),
+          zoomControl: false,
+          preferCanvas: true,
+          dragging: true
+        }).setView([30, 140], 4);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(this.map);
+        L.control.zoom({ position: 'bottomright' }).addTo(this.map);
+        this.map.on('moveend', this.updateTiles);
+        this.map.on('zoomend', () => {
+          this.currentZoom = this.map.getZoom();
+          console.log('Zoom 级别变化:', this.currentZoom);
+          this.updateTiles();
+        });
+        this.map.on('touchstart', (e) => {
+          if (e.originalEvent.touches.length === 1) {
+            this.map.dragging.enable();
+          }
+        });
+        this.map.on('touchend', (e) => {
+          console.log('触摸结束:', e.latlng);
+        });
+        this.map.on('click', (e) => {
+          console.log('地图点击:', e.latlng);
+        });
+        this.isMapInitialized = true;
+        console.log('地图初始化完成');
+      } catch (e) {
+        console.error('地图初始化失败:', e);
+        this.isMapInitialized = false;
+      }
+    },
+    renderEvents() {
+      if (this.isGlobalPlaying || !this.map || !this.isMapInitialized) {
+        console.warn('地图未初始化或动画播放中，跳过 renderEvents');
+        return;
+      }
       if (this.geoJsonLayer) {
         this.geoJsonLayer.remove();
         this.geoJsonLayer = null;
       }
+      if (!this.filteredEvents?.length) {
+        console.warn('无过滤事件，无法渲染');
+        return;
+      }
 
-      // 空数据检查
-      if (!this.filteredEvents?.length) return;
-
-      // 创建新图层
       this.geoJsonLayer = L.geoJSON(this.filteredEvents, {
+        interactive: true,
+        bubblingMouseEvents: true,
         coordsToLatLng: (coords) => {
-          // 坐标有效性检查
           if (Array.isArray(coords) && coords.length >= 2) {
             return L.latLng(coords[1], coords[0]);
           }
@@ -827,46 +927,23 @@ export default {
           fillOpacity: 0.2
         }),
         onEachFeature: (feature, layer) => {
-          // 弹窗绑定
-          if (feature.properties) {
-            layer.bindPopup(this.createPopupContent(feature.properties));
-          }
-          // 保存原始样式
           const originalStyle = {
             color: this.getSpeedColor(feature.properties.speed),
             weight: 2,
             opacity: 0.8
           };
           layer.setStyle(originalStyle);
-
-          // 保存原始样式到图层属性
           layer.originalStyle = originalStyle;
 
-          layer.on('click', () => {
-            // 清除上一个高亮
-            if (this.currentHighlight) {
-              this.currentHighlight.setStyle(this.currentHighlight.originalStyle);
-            }
-            
-            // 设置新高亮（使用原始颜色但加粗边框）
-            layer.setStyle({
-              color: layer.originalStyle.color,
-              weight: 5,
-              opacity: 1
-            });
-            
-            // 更新当前高亮引用
-            this.currentHighlight = layer;
-          });
-           // 可选：添加鼠标悬停效果
-           layer.on('mouseover', () => {
+          this.bindFeatureEvents(feature, layer);
+
+          layer.on('mouseover', () => {
             layer.setStyle({
               color: layer.originalStyle.color,
               weight: 3,
               opacity: 1
             });
           });
-          
           layer.on('mouseout', () => {
             if (this.currentHighlight !== layer) {
               layer.setStyle(layer.originalStyle);
@@ -875,14 +952,20 @@ export default {
         }
       }).addTo(this.map);
 
-      // 自适应视图
       this.safeFitBounds();
+      this.map.invalidateSize();
     },
-
-    // 事件筛选
     filterEvents() {
-      if (!this.allEvents.length) return;
-      // 当动画停止时强制重新渲染
+      if (!this.timeRange || !Array.isArray(this.timeRange)) {
+        console.warn('时间范围无效:', this.timeRange);
+        this.filteredEvents = [];
+        this.renderEvents();
+        return;
+      }
+      if (!this.allEvents.length) {
+        console.warn('无可用事件数据');
+        return;
+      }
       if (!this.isGlobalPlaying) {
         if (this.geoJsonLayer) {
           this.geoJsonLayer.remove();
@@ -890,234 +973,242 @@ export default {
         }
       }
       const [startDate, endDate] = this.timeRange.map(d => new Date(d));
-      
       this.filteredEvents = this.allEvents.filter(event => {
         const props = event.properties;
-        
-        // 持续时间筛选（类型安全）
         const duration = Number(props.duration) || 0;
         if (duration < this.minDuration) return false;
-
-        // 时间范围筛选（日期有效性检查）
         const eventStart = new Date(props.start_date);
         const eventEnd = new Date(eventStart);
         eventEnd.setDate(eventStart.getDate() + duration);
-        
-        return (
-          eventStart >= startDate && 
+        const isValid = (
+          eventStart >= startDate &&
           eventEnd <= endDate &&
           !isNaN(eventStart.getTime())
         );
+        return isValid;
       });
-
       console.log('过滤结果:', {
         original: this.allEvents.length,
-        filtered: this.filteredEvents.length
+        filtered: this.filteredEvents.length,
+        sampleFiltered: this.filteredEvents[0]
       });
-        // 非播放状态时渲染静态视图
       if (!this.isGlobalPlaying) {
         this.renderEvents();
       }
-
     },
-
-    // 创建移动轨迹路径
     createMovementPath(feature) {
       const points = feature.properties.daily_info
-        .map(d => [d.centroid.lat, d.centroid.lon]); // 确保坐标顺序正确
-      
+        .map(d => [d.centroid.lat, d.centroid.lon])
+        .filter(p => p[0] && p[1]);
       return L.polyline(points, {
-        color: '#ff0000', // 临时使用醒目颜色
+        color: '#ff0000',
         weight: 3,
         opacity: 0.9
       });
     },
-
-    // 获取速度对应的颜色
     getSpeedColor(speed) {
-      return this.speedRanges.find(range => 
+      return this.speedRanges.find(range =>
         speed >= range.min && speed < range.max
       )?.color || '#999';
     },
-
-    // 创建弹窗内容
     createPopupContent(properties) {
       const centroid = properties.centroid;
       return `
-      <div class="event-popup">
-        <h4>事件 #${properties.event_id}</h4>
-        <div class="popup-grid">
-          <div>📅 开始日期:</div>
-          <div>${properties.start_date.toLocaleDateString()}</div>
-          
-          <div>⏳ 持续时间:</div>
-          <div>${properties.duration} 天</div>
-          
-          <div>🚀 移动速度:</div>
-          <div>${properties.speed.toFixed(1)} km/d</div>
-          
-          <div>📍 初始位置:</div>
-          <div>
-            ${ centroid ? `${centroid.lat.toFixed(2)}°N, ${centroid.lon.toFixed(2)}°E` : '未知' }
+        <div class="event-popup">
+          <h4>事件 #${properties.event_id}</h4>
+          <div class="popup-grid">
+            <div>📅 开始日期:</div>
+            <div>${properties.start_date.toLocaleDateString()}</div>
+            <div>⏳ 持续时间:</div>
+            <div>${properties.duration} 天</div>
+            <div>🌡️ 最大强度:</div>
+            <div>${properties.max_anomaly.toFixed(2)} ℃</div>
+            <div>🚀 移动速度:</div>
+            <div>${properties.speed.toFixed(1)} km/d</div>
+            <div>📍 初始位置:</div>
+            <div>
+              ${centroid ? `${centroid.lat.toFixed(2)}°N, ${centroid.lon.toFixed(2)}°E` : '未知'}
+            </div>
           </div>
         </div>
-      </div>
-    `;
+      `;
     },
-
-    // 处理地图缩放
     safeFitBounds() {
-      if (this.geoJsonLayer) {
+      if (this.geoJsonLayer && this.map) {
         const bounds = this.geoJsonLayer.getBounds();
         if (bounds.isValid()) {
           this.map.fitBounds(bounds, { padding: [30, 30] });
+          this.map.invalidateSize();
         }
       }
     }
   },
   beforeUnmount() {
+    this.selectedEvent = null;
     if (this.globalAnimationInterval) clearInterval(this.globalAnimationInterval);
     if (this.animationInterval) clearInterval(this.animationInterval);
+    this.clearAllLayers();
     if (this.map) {
-      this.map.eachLayer(layer => layer.remove());
+      this.map.eachLayer(layer => {
+        try {
+          layer.remove();
+        } catch (e) {
+          console.warn('移除图层失败:', e);
+        }
+      });
+      this.map.off();
       this.map.remove();
       this.map = null;
+      this.isMapInitialized = false;
+      console.log('地图已清理');
     }
-    this.activeLayers.forEach(layer => layer.remove());
     this.activeLayers.clear();
-    this.currentDate = null; // 清理 currentDate
-  },
+    this.currentDate = null;
+  }
 };
 </script>
 
 <style scoped>
-.timeline-indicator {
+.info-panel-wrapper {
   position: fixed;
-  bottom: 20px;
-  left: 20px; /* 移到左下角，避免被地图遮挡 */
-  background: rgba(155, 140, 189, 0.9);
-  color: #000;
-  padding: 10px;
-  border-radius: 5px;
-  z-index: 2000; /* 确保在地图之上 */
-  font-size: 16px;
+  right: 0;
+  top: 0;
+  height: 100vh;
+  background: #ffffff !important;
+  border-left: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 0;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.1);
+  z-index: 2000 !important;
+  pointer-events: auto !important;
+  overflow-y: auto;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  display: block;
+  opacity: 1;
 }
 
-.progress-bar {
-  height: 4px;
-  background: rgba(255,255,255,0.3);
-  margin-top: 8px;
-  border-radius: 2px;
+.info-panel-wrapper.hidden {
+  opacity:0;
+  transform: translateX(100%);
+}
+@media (max-width: 768px) {
+  .info-panel-wrapper {
+    width: 90vw !important;
+    max-width: 400px;
+    right: 0;
+    top: 0;
+    height: 100vh;
+  }
 }
 
-.progress {
+#map-container {
+  pointer-events: auto;
+  z-index: 999;
+  width: 100%;
   height: 100%;
-  background: #FFF;
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-/* 确保多边形可见 */
-.heatwave-polygon {
-  stroke-width: 2px !important;
-  stroke-opacity: 1 !important;
-  animation: pulse 2s ease-in-out infinite;
 }
 
-@keyframes pulse {
-  0% { transform: scale(0.8); }
-  50% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255,0,0,0); }
-  100% { transform: scale(0.8); }
-}
-
-
-/* 添加多边形动画 */
-.leaflet-polygon {
-  transition: opacity 0.5s ease-in-out;
-}
-
-@keyframes trail {
-  from { stroke-dashoffset: 1000; }
-  to { stroke-dashoffset: 0; }
-}
-
-.animated-path {
-  stroke-dasharray: 1000;
-  animation: trail 3s linear infinite;
-}
-
-/* 添加多边形动画效果 */
-.animated-polygon {
-  animation: polygonPulse 2s infinite;
-}
-
-
-
-.animated-marker .pulsing-dot {
-  width: 20px;
-  height: 20px;
-  background: #ff0000;
-  border-radius: 50%;
-  animation: pulse 1.5s infinite;
-  box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
-}
-
-@keyframes pulse {
-  0% { transform: scale(0.8); }
-  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(255,0,0,0); }
-  100% { transform: scale(0.8); }
-}
-
-/* 控制面板动画控件 */
-.animation-control {
-  margin-top: 16px;
-  padding: 12px;
-  background: rgba(255,255,255,0.9);
+.event-popup {
+  font-family: Arial, sans-serif;
+  color: #e3f2fd;
+  background: rgba(32, 45, 64, 0.95);
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  padding: 12px;
+  max-width: 300px;
+}
+
+.event-popup h4 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: #4a90e2;
+}
+
+.popup-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.popup-grid div:nth-child(odd) {
+  font-weight: 500;
+  color: #a3bffa;
+}
+
+.popup-grid div:nth-child(even) {
+  color: #e3f2fd;
 }
 
 .heatwave-vis {
   height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  position: relative;
+  background: #1a2335;
   display: flex;
   flex-direction: column;
 }
 
 #map-container {
-  touch-action: none; /* 禁用浏览器默认触摸行为 */
-  z-index: 1; /* 确保地图在最上层 */
-  pointer-events: auto !important; /* 强制启用交互 */
-  height: 1000px; /* 确保明确的高度 */
-  width: 100%;
-  background: #f0f2f5;
-  position: relative; /* 修复定位问题 */
+  flex: 1;
+  position: relative;
+  background: #213042;
+  touch-action: none;
+  z-index: 1;
+  pointer-events: auto !important;
 }
 
 .control-panel {
-  padding: 16px;
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  position: fixed;
+  top: 300px;
+  left: 20px;
+  z-index: 1000;
+  max-width: 320px;
+  background: rgba(32, 45, 64, 0.9);
+  backdrop-filter: blur(5px);
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.control-group {
   display: flex;
-  gap: 24px;
-  height: 100px; 
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.control-item {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 12px;
+  max-width: 280px;
 }
 
 .slider-container {
-  width: 500px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  padding: 8px 12px;
+}
+
+.slider-label {
+  color: #e3f2fd;
+  font-size: 12px;
+  margin-bottom: 8px;
 }
 
 .legend {
   position: fixed;
-  bottom: 20px;
   right: 20px;
-  background: rgba(255,255,255,0.9);
-  padding: 12px;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  bottom: 80px;
   z-index: 1000;
+  background: rgba(32, 45, 64, 0.9);
+  backdrop-filter: blur(2px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.legend-title {
+  color: #e3f2fd;
+  font-weight: 500;
+  margin-bottom: 8px;
 }
 
 .legend-item {
@@ -1128,49 +1219,187 @@ export default {
 }
 
 .color-box {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  border: 1px solid rgba(0,0,0,0.1);
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
 }
 
-.event-popup {
-  max-width: 280px;
+.legend-item span {
+  color: #e3f2fd;
+  font-size: 12px;
 }
 
-.popup-grid {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 12px;
+.timeline-container {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  z-index: 1000;
+}
+
+.timeline-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.timeline-progress {
+  height: 100%;
+  background: #4a90e2;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.timeline-label {
+  color: #fff;
+  text-align: center;
   margin-top: 8px;
+  font-size: 14px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
-.popup-grid > div:nth-child(odd) {
-  font-weight: 500;
-  color: #666;
-}
-/* 修复ElementUI组件可能导致的覆盖问题 */
-.control-panel {
-  position: relative;
-  z-index: 2; /* 保持控制面板在地图之上 */
-  pointer-events: auto; /* 允许操作控件 */
-}
-
-/* 禁用leaflet的捕捉提示干扰 */
-.leaflet-container a.leaflet-control-attribution-leaflet {
-  pointer-events: none !important;
+.custom-zoom-control {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-
-
-/* 动态图波浪按钮特效 */
-.el-button--success.is-active {
-  animation: wave 1.5s infinite;
+.custom-zoom-control button {
+  background: rgba(32, 45, 64, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+  transition: all 0.2s;
 }
 
-@keyframes wave {
-  0% { box-shadow: 0 0 0 0 rgba(103,194,58,0.4); }
-  70% { box-shadow: 0 0 0 10px rgba(103,194,58,0); }
-  100% { box-shadow: 0 0 0 0 rgba(103,194,58,0); }
+.custom-zoom-control button:hover {
+  background: #4a6da7;
+}
+
+@keyframes polygon-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.8;
+  }
+}
+
+@keyframes marker-pulse {
+  0% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
+  }
+  70% {
+    transform: scale(1.1);
+    box-shadow: 0 0 0 10px rgba(255, 0, 0, 0);
+  }
+  100% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(255, 0, 0, 0);
+  }
+}
+
+.animated-polygon {
+  animation: polygon-pulse 2s ease-in-out infinite;
+}
+
+.animated-marker .pulsing-dot {
+  animation: marker-pulse 1.5s infinite;
+}
+
+@media (max-width: 768px) {
+  .control-panel {
+    max-width: 280px;
+    left: 10px;
+    right: 10px;
+    top: 10px;
+  }
+  .legend {
+    bottom: 70px;
+    right: 10px;
+    max-width: 180px;
+  }
+  .timeline-container {
+    width: 80%;
+    bottom: 20px;
+  }
+  .custom-zoom-control {
+    bottom: 70px;
+  }
+}
+
+:deep(.el-button) {
+  background: rgba(72, 114, 176, 0.8) !important;
+  border: 1px solid #4a6da7 !important;
+  color: #e3f2fd !important;
+  transition: all 0.2s;
+  border-radius: 6px !important;
+}
+
+:deep(.el-button:hover) {
+  background: #4a6da7 !important;
+  transform: translateY(-1px);
+}
+
+:deep(.el-slider__bar) {
+  background: #4a90e2 !important;
+}
+
+:deep(.el-slider__button) {
+  border-color: #4a90e2 !important;
+}
+
+.date-picker-wrapper {
+  max-width: 240px;
+  width: 100%;
+  padding: 8px !important;
+}
+
+:deep(.el-date-editor--daterange) {
+  --el-date-editor-width: 92% !important;
+  max-width: 100%;
+}
+
+:deep(.el-range-separator) {
+  width: 24px;
+  font-size: 12px;
+}
+
+:deep(.el-range-input) {
+  width: 45% !important;
+  font-size: 12px;
+  background: transparent;
+}
+
+@media (max-width: 768px) {
+  .date-picker-wrapper {
+    max-width: 240px;
+  }
+  :deep(.el-range-editor.el-input__wrapper) {
+    padding: 0 6px !important;
+  }
+  :deep(.el-range-input) {
+    font-size: 11px !important;
+  }
+  :deep(.el-range-separator) {
+    font-size: 11px !important;
+    padding: 0 2px;
+  }
 }
 </style>

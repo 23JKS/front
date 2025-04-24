@@ -16,7 +16,13 @@
             active-class="active">
             <li>操作记录 </li>
           </router-link>
-          
+
+          <router-link 
+            to="/development" 
+            class="menu-item"
+            active-class="active">
+            <li>待开发功能 </li>
+          </router-link>
 
         </ul>
 
