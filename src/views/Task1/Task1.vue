@@ -11,20 +11,29 @@
       v-on="debugEventListeners"
       @click="handlePanelClick"
     />
-    <!-- 悬浮式控制面板 -->
+    <!-- 控制面板 -->
     <div class="control-panel">
       <div class="control-group">
-        <!-- 动画控制 -->
-        <div class="control-item">
-          <el-button-group class="full-width">
-            <el-button type="primary" @click="toggleGlobalAnimation">
-              {{ isGlobalPlaying ? '⏸ 暂停' : '▶️ 播放' }}
-            </el-button>
-            <el-button @click="resetGlobalAnimation">⏹ 停止</el-button>
-          </el-button-group>
+        <!-- 动画控制按钮 -->
+        <div class="control-item animation-controls">
+          <button
+            class="control-button"
+            :class="{ active: isGlobalPlaying }"
+            @click="toggleGlobalAnimation"
+            title="播放/暂停"
+          >
+            <span class="icon">{{ isGlobalPlaying ? '⏸' : '▶️' }}</span>
+          </button>
+          <button
+            class="control-button"
+            @click="resetGlobalAnimation"
+            title="停止"
+          >
+            <span class="icon">⏹</span>
+          </button>
         </div>
         <!-- 时间选择 -->
-        <div class="control-item date-picker-wrapper">
+        <div class="control-item date-picker">
           <el-date-picker
             v-model="timeRange"
             type="daterange"
@@ -34,10 +43,11 @@
             value-format="YYYY-MM-DD"
             @change="filterEvents"
             popper-class="ventusky-datepicker"
+            :clearable="false"
           />
         </div>
-        <!-- 持续时间控制 -->
-        <div class="control-item slider-container">
+        <!-- 持续时间滑块 -->
+        <div class="control-item duration-slider">
           <div class="slider-label">持续时间 ≥ {{ minDuration }}天</div>
           <el-slider
             v-model="minDuration"
@@ -68,8 +78,8 @@
     </div>
     <!-- 自定义缩放控件 -->
     <div class="custom-zoom-control">
-      <button @click="safeZoomIn">+</button>
-      <button @click="safeZoomOut">-</button>
+      <button @click="safeZoomIn" title="放大">+</button>
+      <button @click="safeZoomOut" title="缩小">-</button>
     </div>
   </div>
 </template>
@@ -84,6 +94,15 @@ const SPEED_COLORS = {
   medium: '#FFC107',
   high: '#F44336'
 };
+
+// 简单的防抖函数
+function debounce(func, wait) {
+  let timeout;
+  return function (...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), wait);
+  };
+}
 
 export default {
   name: 'HeatwaveVisualization',
@@ -134,7 +153,9 @@ export default {
         { min: 25, max: 50, color: SPEED_COLORS.medium, label: '中速 (25-50 km/d)' },
         { min: 50, max: Infinity, color: SPEED_COLORS.high, label: '高速 (>50 km/d)' }
       ],
-      currentDate: null
+      currentDate: null,
+      isZooming: false,
+      animationFrameId: null
     };
   },
   computed: {
@@ -147,9 +168,14 @@ export default {
       console.log('面板组件是否存在:', !!this.$refs.infoPanel);
       this.initMap();
       this.map.on('moveend', this.updateTiles);
+      this.map.on('zoomstart', () => {
+        this.isZooming = true;
+        console.log('Zoom 开始');
+      });
       this.map.on('zoomend', () => {
+        this.isZooming = false;
         this.currentZoom = this.map.getZoom();
-        console.log('Zoom 级别变化:', this.currentZoom);
+        console.log('Zoom 结束, 当前级别:', this.currentZoom);
         this.updateTiles();
       });
       await this.loadData();
@@ -168,11 +194,16 @@ export default {
     }
   },
   methods: {
+    debouncedInvalidateSize: debounce(function () {
+      if (this.map && this.isMapInitialized) {
+        this.map.invalidateSize({ animate: false });
+        console.log('执行防抖 invalidateSize');
+      }
+    }, 100),
     safeZoomIn() {
       if (this.map && this.isMapInitialized) {
         console.log('执行 zoomIn');
         this.map.zoomIn();
-        this.map.invalidateSize();
       } else {
         console.warn('地图未初始化，跳过 zoomIn');
       }
@@ -181,7 +212,6 @@ export default {
       if (this.map && this.isMapInitialized) {
         console.log('执行 zoomOut');
         this.map.zoomOut();
-        this.map.invalidateSize();
       } else {
         console.warn('地图未初始化，跳过 zoomOut');
       }
@@ -191,7 +221,7 @@ export default {
       e.stopPropagation();
       this.$nextTick(() => {
         if (this.map) {
-          this.map.invalidateSize();
+          this.debouncedInvalidateSize();
           console.log('面板点击后调整地图大小');
         }
       });
@@ -210,7 +240,6 @@ export default {
           throw new Error('无效的 feature 数据');
         }
 
-        // 规范化 selectedEvent
         this.selectedEvent = {
           type: feature.type,
           properties: {
@@ -219,7 +248,7 @@ export default {
               ? feature.properties.start_date
               : new Date(feature.properties.start_date),
             duration: feature.properties.duration ?? 0,
-            max_anomaly: feature.properties.max_anomaly ?? 0, // 默认值
+            max_anomaly: feature.properties.max_anomaly ?? 0,
             cumulative_anomaly: feature.properties.cumulative_anomaly ?? 0,
             centroid_change_rate: feature.properties.centroid_change_rate ?? 0,
             daily_info: Array.isArray(feature.properties.daily_info)
@@ -234,7 +263,6 @@ export default {
 
         console.log('更新 selectedEvent:', this.selectedEvent);
 
-        // 高亮图层
         if (this.currentHighlight) {
           this.currentHighlight.setStyle(this.currentHighlight.originalStyle);
         }
@@ -259,7 +287,7 @@ export default {
               panelWidth: panelEl.offsetWidth
             });
             if (this.map) {
-              this.map.invalidateSize();
+              this.debouncedInvalidateSize();
               console.log('点击要素后调整地图大小');
             }
           } else {
@@ -402,22 +430,28 @@ export default {
       });
     },
     clearAllLayers() {
-      if (this.geoJsonLayer) {
+      if (this.geoJsonLayer && this.geoJsonLayer._map) {
         this.geoJsonLayer.remove();
         this.geoJsonLayer = null;
       }
-      this.activeLayers.forEach(layer => layer.remove());
-      this.activeLayers.clear();
-      if (this.pathLayer) {
+      this.activeLayers.forEach((layers, eventId) => {
+        layers.forEach(layer => {
+          if (layer._map) {
+            layer.remove();
+          }
+        });
+        this.activeLayers.delete(eventId);
+      });
+      if (this.pathLayer && this.pathLayer._map) {
         this.pathLayer.remove();
         this.pathLayer = null;
       }
-      if (this.markerLayer) {
+      if (this.markerLayer && this.markerLayer._map) {
         this.markerLayer.remove();
         this.markerLayer = null;
       }
       if (this.map) {
-        this.map.invalidateSize();
+        this.debouncedInvalidateSize();
         console.log('清理图层后调整地图大小');
       }
     },
@@ -472,6 +506,10 @@ export default {
       );
     },
     updateGlobalAnimation() {
+      if (this.isZooming || (this.map && this.map._animatingZoom)) {
+        console.log('Zoom 进行中，跳过动画更新');
+        return;
+      }
       const convertCoords = (coords) => {
         return coords.map(item => {
           if (Array.isArray(item[0])) return convertCoords(item);
@@ -494,7 +532,12 @@ export default {
         if (!event) return;
         const eventEndDate = calculateEventEnd(event.properties.start_date, event.properties.duration);
         if (currentISODate > this.formatDate(eventEndDate)) {
-          layers.forEach(layer => layer.remove());
+          layers.forEach(layer => {
+            if (layer._map) {
+              layer.remove();
+              console.log(`移除过期图层: ${eventId}`);
+            }
+          });
           this.activeLayers.delete(eventId);
         }
       });
@@ -516,7 +559,11 @@ export default {
         });
         if (this.activeLayers.has(event.properties.event_id)) {
           const oldLayers = this.activeLayers.get(event.properties.event_id);
-          oldLayers.forEach(layer => layer.remove());
+          oldLayers.forEach(layer => {
+            if (layer._map) {
+              layer.remove();
+            }
+          });
         }
         const newPolygons = allGeometries.map(coords => {
           try {
@@ -538,17 +585,12 @@ export default {
             return null;
           }
         }).filter(Boolean);
-        if (newPolygons.length > 0 && this.map) {
+        if (newPolygons.length > 0 && this.map && !this.isZooming) {
           newPolygons.forEach(p => p.addTo(this.map));
           this.activeLayers.set(event.properties.event_id, newPolygons);
           console.log(`[${event.properties.event_id}] 创建 ${newPolygons.length} 个多边形`);
         }
       });
-      if (this.map) {
-        requestAnimationFrame(() => {
-          this.map.invalidateSize({ animate: true });
-        });
-      }
       this.currentStep++;
       this.progressStyle = { width: `${(this.currentStep / this.maxSteps) * 100}%` };
       this.currentDate = this.timelineDates[this.currentStep];
@@ -592,7 +634,11 @@ export default {
     resetGlobalAnimation() {
       this.pauseGlobalAnimation();
       this.activeLayers.forEach(layers => {
-        layers.forEach(layer => layer.remove());
+        layers.forEach(layer => {
+          if (layer._map) {
+            layer.remove();
+          }
+        });
       });
       this.activeLayers.clear();
       this.filterEvents();
@@ -601,7 +647,7 @@ export default {
       this.currentDate = null;
       this.progressStyle = { width: '0%' };
       if (this.map) {
-        this.map.invalidateSize();
+        this.debouncedInvalidateSize();
       }
     },
     toggleAnimation() {
@@ -684,19 +730,19 @@ export default {
       this.currentAnimation = null;
     },
     clearAnimation() {
-      if (this.pathLayer && this.map) {
+      if (this.pathLayer && this.pathLayer._map) {
         this.map.removeLayer(this.pathLayer);
         this.pathLayer = null;
       }
       if (this.currentAnimation) {
-        if (this.currentAnimation.marker && this.map) {
+        if (this.currentAnimation.marker && this.currentAnimation.marker._map) {
           this.map.removeLayer(this.currentAnimation.marker);
         }
-        if (this.currentAnimation.currentPolygon && this.map) {
+        if (this.currentAnimation.currentPolygon && this.currentAnimation.currentPolygon._map) {
           this.map.removeLayer(this.currentAnimation.currentPolygon);
         }
         this.currentAnimation.polygons?.forEach(p => {
-          if (this.map) this.map.removeLayer(p);
+          if (p._map) this.map.removeLayer(p);
         });
       }
       this.stopAnimation();
@@ -712,7 +758,6 @@ export default {
         console.log('预处理后的数据片段:', rawData.substring(0, 500));
         const data = JSON.parse(rawData);
 
-        // 规范化数据
         this.allEvents = data.features.map((feature, index) => {
           const props = feature.properties || {};
           const dailyInfo = this.parseDailyInfo(props.daily_info || '[]');
@@ -728,7 +773,7 @@ export default {
               event_id: props.event_id ?? `unknown_${index}`,
               start_date: props.start_date ? new Date(props.start_date) : new Date(),
               duration: Number(props.duration) || 0,
-              max_anomaly: Number(props.max_anomaly) || 0, // 确保 max_anomaly 存在
+              max_anomaly: Number(props.max_anomaly) || 0,
               cumulative_anomaly: Number(props.cumulative_anomaly) || 0,
               centroid_change_rate: Number(props.centroid_change_rate) || 0,
               daily_info: validDays,
@@ -869,24 +914,11 @@ export default {
           preferCanvas: true,
           dragging: true
         }).setView([30, 140], 4);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          attribution: '© OpenStreetMap'
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors'
         }).addTo(this.map);
         L.control.zoom({ position: 'bottomright' }).addTo(this.map);
         this.map.on('moveend', this.updateTiles);
-        this.map.on('zoomend', () => {
-          this.currentZoom = this.map.getZoom();
-          console.log('Zoom 级别变化:', this.currentZoom);
-          this.updateTiles();
-        });
-        this.map.on('touchstart', (e) => {
-          if (e.originalEvent.touches.length === 1) {
-            this.map.dragging.enable();
-          }
-        });
-        this.map.on('touchend', (e) => {
-          console.log('触摸结束:', e.latlng);
-        });
         this.map.on('click', (e) => {
           console.log('地图点击:', e.latlng);
         });
@@ -953,7 +985,7 @@ export default {
       }).addTo(this.map);
 
       this.safeFitBounds();
-      this.map.invalidateSize();
+      this.debouncedInvalidateSize();
     },
     filterEvents() {
       if (!this.timeRange || !Array.isArray(this.timeRange)) {
@@ -1038,7 +1070,7 @@ export default {
         const bounds = this.geoJsonLayer.getBounds();
         if (bounds.isValid()) {
           this.map.fitBounds(bounds, { padding: [30, 30] });
-          this.map.invalidateSize();
+          this.debouncedInvalidateSize();
         }
       }
     }
@@ -1047,11 +1079,12 @@ export default {
     this.selectedEvent = null;
     if (this.globalAnimationInterval) clearInterval(this.globalAnimationInterval);
     if (this.animationInterval) clearInterval(this.animationInterval);
+    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     this.clearAllLayers();
     if (this.map) {
       this.map.eachLayer(layer => {
         try {
-          layer.remove();
+          if (layer._map) layer.remove();
         } catch (e) {
           console.warn('移除图层失败:', e);
         }
@@ -1069,6 +1102,7 @@ export default {
 </script>
 
 <style scoped>
+/* 信息面板样式保持不变 */
 .info-panel-wrapper {
   position: fixed;
   right: 0;
@@ -1087,9 +1121,10 @@ export default {
 }
 
 .info-panel-wrapper.hidden {
-  opacity:0;
+  opacity: 0;
   transform: translateX(100%);
 }
+
 @media (max-width: 768px) {
   .info-panel-wrapper {
     width: 90vw !important;
@@ -1100,6 +1135,7 @@ export default {
   }
 }
 
+/* 地图容器 */
 #map-container {
   pointer-events: auto;
   z-index: 999;
@@ -1107,8 +1143,9 @@ export default {
   height: 100%;
 }
 
+/* 弹出窗口 */
 .event-popup {
-  font-family: Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: #e3f2fd;
   background: rgba(32, 45, 64, 0.95);
   border-radius: 8px;
@@ -1138,12 +1175,13 @@ export default {
   color: #e3f2fd;
 }
 
+/* 主容器 */
 .heatwave-vis {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
   position: relative;
-  background: #1a2335;
+  background: #ffffff;
   display: flex;
   flex-direction: column;
 }
@@ -1151,84 +1189,137 @@ export default {
 #map-container {
   flex: 1;
   position: relative;
-  background: #213042;
+  background: #ffffff;
   touch-action: none;
   z-index: 1;
   pointer-events: auto !important;
 }
 
+/* 控制面板 */
 .control-panel {
   position: fixed;
-  top: 300px;
-  left: 20px;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1000;
-  max-width: 320px;
-  background: rgba(32, 45, 64, 0.9);
-  backdrop-filter: blur(5px);
-  border-radius: 8px;
-  padding: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  max-width: 600px;
+  width: 90%;
 }
 
 .control-group {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
 }
 
 .control-item {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  padding: 12px;
-  max-width: 280px;
+  display: flex;
+  align-items: center;
+  padding: 4px;
 }
 
-.slider-container {
-  padding: 8px 12px;
+.animation-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.control-button {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 18px;
+  color: #2c3e50;
+}
+
+.control-button:hover {
+  background: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.control-button.active {
+  background: #4a90e2;
+  color: #ffffff;
+  border-color: #4a90e2;
+}
+
+.control-button .icon {
+  line-height: 1;
+}
+
+.date-picker {
+  max-width: 220px;
+}
+
+:deep(.el-date-editor--daterange) {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  height: 36px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+:deep(.el-range-input) {
+  color: #2c3e50;
+  background: transparent;
+}
+
+:deep(.el-range-separator) {
+  color: #2c3e50;
+  font-size: 12px;
+}
+
+:deep(.el-date-editor .el-range__icon) {
+  color: #4a90e2;
+}
+
+.duration-slider {
+  width: 200px;
 }
 
 .slider-label {
-  color: #e3f2fd;
+  color: #2c3e50;
   font-size: 12px;
-  margin-bottom: 8px;
+  margin-right: 8px;
 }
 
-.legend {
-  position: fixed;
-  right: 20px;
-  bottom: 80px;
-  z-index: 1000;
-  background: rgba(32, 45, 64, 0.9);
-  backdrop-filter: blur(2px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 12px;
+:deep(.el-slider__runway) {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
+  height: 4px;
 }
 
-.legend-title {
-  color: #e3f2fd;
-  font-weight: 500;
-  margin-bottom: 8px;
+:deep(.el-slider__bar) {
+  background: #4a90e2;
+  border-radius: 4px;
+  height: 4px;
 }
 
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0;
+:deep(.el-slider__button) {
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border: 2px solid #4a90e2;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-.color-box {
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-}
-
-.legend-item span {
-  color: #e3f2fd;
-  font-size: 12px;
-}
-
+/* 时间轴 */
 .timeline-container {
   position: fixed;
   bottom: 40px;
@@ -1259,32 +1350,75 @@ export default {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
+/* 图例 */
+.legend {
+  position: fixed;
+  right: 20px;
+  bottom: 140px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.legend-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #2c3e50;
+  font-weight: 600;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  margin: 4px 0;
+  gap: 6px;
+  color: #2c3e50;
+  font-size: 12px;
+}
+
+.color-box {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+/* 缩放控件 */
 .custom-zoom-control {
   position: fixed;
-  bottom: 20px;
+  top: 20px;
   right: 20px;
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .custom-zoom-control button {
-  background: rgba(32, 45, 64, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  color: #2c3e50 !important;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   cursor: pointer;
-  backdrop-filter: blur(2px);
-  transition: all 0.2s;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s ease;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .custom-zoom-control button:hover {
-  background: #4a6da7;
+  background: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
 }
 
+/* 动画 */
 @keyframes polygon-pulse {
   0% {
     transform: scale(0.9);
@@ -1323,83 +1457,75 @@ export default {
   animation: marker-pulse 1.5s infinite;
 }
 
+/* 响应式设计 */
 @media (max-width: 768px) {
   .control-panel {
-    max-width: 280px;
-    left: 10px;
-    right: 10px;
-    top: 10px;
+    bottom: 100px;
+    width: 95%;
+    padding: 6px;
   }
-  .legend {
-    bottom: 70px;
-    right: 10px;
-    max-width: 180px;
+
+  .control-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
   }
+
+  .control-item {
+    padding: 4px;
+  }
+
+  .animation-controls {
+    justify-content: center;
+  }
+
+  .date-picker {
+    max-width: none;
+  }
+
+  .duration-slider {
+    max-width: none;
+  }
+
   .timeline-container {
     width: 80%;
     bottom: 20px;
   }
+
+  .legend {
+    bottom: 160px;
+    right: 10px;
+    max-width: 160px;
+  }
+
   .custom-zoom-control {
-    bottom: 70px;
+    top: 10px;
+    right: 10px;
   }
 }
 
 :deep(.el-button) {
-  background: rgba(72, 114, 176, 0.8) !important;
-  border: 1px solid #4a6da7 !important;
-  color: #e3f2fd !important;
-  transition: all 0.2s;
-  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  color: #2c3e50 !important;
+  border-radius: 8px !important;
 }
 
 :deep(.el-button:hover) {
-  background: #4a6da7 !important;
+  background: #ffffff !important;
   transform: translateY(-1px);
 }
 
-:deep(.el-slider__bar) {
-  background: #4a90e2 !important;
+:deep(.ventusky-datepicker) {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-:deep(.el-slider__button) {
-  border-color: #4a90e2 !important;
-}
-
-.date-picker-wrapper {
-  max-width: 240px;
-  width: 100%;
-  padding: 8px !important;
-}
-
-:deep(.el-date-editor--daterange) {
-  --el-date-editor-width: 92% !important;
-  max-width: 100%;
-}
-
-:deep(.el-range-separator) {
-  width: 24px;
-  font-size: 12px;
-}
-
-:deep(.el-range-input) {
-  width: 45% !important;
-  font-size: 12px;
-  background: transparent;
-}
-
-@media (max-width: 768px) {
-  .date-picker-wrapper {
-    max-width: 240px;
-  }
-  :deep(.el-range-editor.el-input__wrapper) {
-    padding: 0 6px !important;
-  }
-  :deep(.el-range-input) {
-    font-size: 11px !important;
-  }
-  :deep(.el-range-separator) {
-    font-size: 11px !important;
-    padding: 0 2px;
-  }
+:deep(.el-popper) {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 8px !important;
 }
 </style>
