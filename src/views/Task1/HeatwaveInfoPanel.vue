@@ -12,7 +12,9 @@
         <div class="info-label">最大强度:</div>
         <div>{{ selectedEvent.properties.max_anomaly?.toFixed(2) ?? 'N/A' }} ℃</div>
       </div>
-      <button @click="$emit('close')">关闭</button>
+      <div class="close-button-container">
+        <button class="close-button" @click="$emit('close')">×</button>
+      </div>
       <!-- 指纹图 -->
       <div class="chart-card">
         <h3>热浪指纹分析</h3>
@@ -29,6 +31,11 @@
       <div class="chart-card hovmoller-charts">
         <h3>热浪质心轨迹分析</h3>
         <div ref="latTimeChartContainer" class="chart"></div>
+        <div class="playback-controls">
+          <button @click="startPlayback" :disabled="isPlaying">播放</button>
+          <button @click="pausePlayback" :disabled="!isPlaying">暂停</button>
+          <button @click="resetPlayback">重置</button>
+        </div>
       </div>
     </div>
     <div v-else>
@@ -76,7 +83,11 @@ export default {
       isResizing: false,
       minWidth: 300,
       maxWidth: window.innerWidth * 0.8,
-      chartInstances: []
+      chartInstances: [],
+      isPlaying: false,
+      currentIndex: 0,
+      animationInterval: null,
+      arrowData: [] // 存储完整的箭头数据
     };
   },
   watch: {
@@ -86,6 +97,7 @@ export default {
         if (newVal && newVal.properties) {
           console.log('daily_info:', newVal.properties.daily_info);
           this.$nextTick(() => {
+            this.resetPlayback(); // 重置播放状态
             this.renderFingerprintChart();
             this.renderLineCharts();
             this.renderHovmollerCharts();
@@ -116,6 +128,7 @@ export default {
     window.removeEventListener('resize', this.handleWindowResize);
     d3.select(this.$refs.chartContainer).selectAll('*').remove();
     this.clearCharts();
+    this.pausePlayback(); // 清理动画
   },
   methods: {
     startResize(event) {
@@ -146,22 +159,37 @@ export default {
     clearCharts() {
       this.chartInstances.forEach(instance => instance.dispose());
       this.chartInstances = [];
+      this.pausePlayback(); // 停止动画
+      this.arrowData = [];
     },
-    calculateVelocity(prevCentroid, currCentroid, days = 1) {
+    calculateBearing(prevCentroid, currCentroid) {
       if (!prevCentroid || !currCentroid) return { speed: 0, angle: 0 };
-      const R = 6371;
-      const dLat = ((currCentroid.lat - prevCentroid.lat) * Math.PI) / 180;
-      const dLon = ((currCentroid.lon - prevCentroid.lon) * Math.PI) / 180;
-      const lat1 = (prevCentroid.lat * Math.PI) / 180;
-      const lat2 = (currCentroid.lat * Math.PI) / 180;
+      const R = 6371; // 地球半径（km）
+      const toRad = deg => (deg * Math.PI) / 180;
+      const toDeg = rad => (rad * 180) / Math.PI;
+
+      const lat1 = toRad(prevCentroid.lat);
+      const lat2 = toRad(currCentroid.lat);
+      const dLon = toRad(currCentroid.lon - prevCentroid.lon);
+
+      // 计算距离（haversine公式）
+      const dLat = lat2 - lat1;
       const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
       const distance = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      const speed = distance / days;
+      const speed = distance; // 速度（km/天）
+
+      // 计算方位角（bearing）
       const y = Math.sin(dLon) * Math.cos(lat2);
       const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-      const angle = (Math.atan2(y, x) * 180) / Math.PI;
+      let bearing = toDeg(Math.atan2(y, x));
+      bearing = (bearing + 360) % 360; // 归一化到0-360°
+
+      // 转换为ECharts的symbolRotate：0°向右（正X轴），逆时针为正
+      // 地理方位：0°北，顺时针；ECharts：0°东，逆时针
+      const angle = (90 - bearing + 360) % 360;
+
       return { speed, angle };
     },
     prepareData() {
@@ -209,7 +237,7 @@ export default {
           return null;
         }
         const prevCentroid = index > 0 ? dailyInfo[index - 1]?.centroid : null;
-        const velocity = this.calculateVelocity(prevCentroid, day.centroid);
+        const velocity = this.calculateBearing(prevCentroid, { lat, lon });
         return {
           date: new Date(day.date),
           area: Number(day.area_km2) || 0,
@@ -532,6 +560,79 @@ export default {
         this.chartInstances.push(chart);
       });
     },
+    startPlayback() {
+      if (this.isPlaying || this.arrowData.length === 0) return;
+      this.isPlaying = true;
+      this.currentIndex = 0; // 从头开始播放
+      this.updateChart();
+      this.animationInterval = setInterval(() => {
+        this.currentIndex++;
+        if (this.currentIndex >= this.arrowData.length - 1) {
+          this.pausePlayback(); // 到达倒数第二天暂停（最后一天无方向）
+        } else {
+          this.updateChart();
+        }
+      }, 1000); // 每1秒更新一次
+    },
+    pausePlayback() {
+      if (!this.isPlaying) return;
+      this.isPlaying = false;
+      clearInterval(this.animationInterval);
+      this.animationInterval = null;
+    },
+    resetPlayback() {
+      this.pausePlayback();
+      this.currentIndex = 0;
+      this.updateChart(); // 重置时显示所有箭头
+    },
+    updateChart() {
+      const container = this.$refs.latTimeChartContainer;
+      if (!container) return;
+
+      const chart = this.chartInstances.find(instance => instance.getDom() === container);
+      if (!chart) return;
+
+      // 如果 currentIndex 为 0，显示所有箭头（除最后一天）；否则显示当前索引的箭头
+      let seriesData;
+      if (this.currentIndex === 0) {
+        // 默认状态：显示除最后一天的所有箭头
+        seriesData = this.arrowData.slice(0, -1).map((d, i) => ({
+          value: [d.lon, d.lat, d.intensity],
+          date: d.date,
+          symbolRotate: this.arrowData[i + 1] ? this.calculateBearing(
+            { lat: d.lat, lon: d.lon },
+            { lat: this.arrowData[i + 1].lat, lon: this.arrowData[i + 1].lon }
+          ).angle : 0
+        }));
+      } else {
+        // 播放状态：显示当前索引的箭头，方向指向下一天
+        const current = this.arrowData[this.currentIndex];
+        const next = this.arrowData[this.currentIndex + 1];
+        seriesData = current ? [{
+          value: [current.lon, current.lat, current.intensity],
+          date: current.date,
+          symbolRotate: next ? this.calculateBearing(
+            { lat: current.lat, lon: current.lon },
+            { lat: next.lat, lon: next.lon }
+          ).angle : 0
+        }] : [];
+      }
+
+      chart.setOption({
+        animationDuration: 1000,
+        animationEasing: 'cubicInOut',
+        animationDelay: (idx) => idx * 1000 ,
+        series: [
+          {
+            name: '质心位置与方向',
+            type: 'scatter',
+            data: seriesData
+          }
+        ]
+      });
+
+      console.log('Updated chart with index:', this.currentIndex, 'seriesData:', seriesData);
+    },
     renderHovmollerCharts() {
       const container = this.$refs.latTimeChartContainer;
       if (!container || !this.selectedEvent?.properties) return;
@@ -559,36 +660,29 @@ export default {
       const sortedD3Data = d3Data.sort((a, b) => a.date - b.date);
 
       // 准备箭头数据，计算每个点的箭头方向（指向下一天的质心）
-      const arrowData = sortedD3Data.map((d, index) => {
-        // 对于最后一天，没有下一天，使用前一天的角度或默认值
-        let angle = 0;
-        if (index < sortedD3Data.length - 1) {
-          const currCentroid = { lat: d.lat, lon: d.lon };
-          const nextCentroid = { lat: sortedD3Data[index + 1].lat, lon: sortedD3Data[index + 1].lon };
-          const velocity = this.calculateVelocity(currCentroid, nextCentroid);
-          angle = velocity.angle;
-        } else if (index > 0) {
-          // 最后一天使用前一天的角度
-          angle = sortedD3Data[index - 1].angle || 0;
-        }
+            // 修改后（正确代码）
+      this.arrowData = sortedD3Data.map((d, i) => {
+        const next = sortedD3Data[i + 1];
         return {
           lon: d.lon,
           lat: d.lat,
           intensity: d.intensity,
-          speed: d.speed,
-          angle: angle,
-          date: d.date.toLocaleDateString()
+          date: d.date.toLocaleDateString(),
+          angle: next ? this.calculateBearing(d, next) : 0
         };
-      }).filter(d => d.intensity != null && !isNaN(d.angle));
+      });
 
-      // 调试：打印 arrowData 以检查数据
-      console.log('arrowData:', arrowData);
+      // 调试：打印 arrowData
+      console.log('arrowData:', this.arrowData);
 
-      // 准备系列数据
-      const seriesData = arrowData.map(d => ({
+      // 初始显示：除最后一天的所有箭头
+      const seriesData = this.arrowData.slice(0, -1).map((d, i) => ({
         value: [d.lon, d.lat, d.intensity],
         date: d.date,
-        symbolRotate: d.angle
+        symbolRotate: this.arrowData[i + 1] ? this.calculateBearing(
+          { lat: d.lat, lon: d.lon },
+          { lat: this.arrowData[i + 1].lat, lon: this.arrowData[i + 1].lon }
+        ).angle : 0
       }));
 
       chart.setOption({
@@ -596,11 +690,11 @@ export default {
           trigger: 'item',
           formatter: params => {
             const { data } = params;
-            if (!data || !data.date || data.lon == null || data.lat == null) {
+            if (!data || !data.date || data.value[0] == null || data.value[1] == null) {
               return '无效数据';
             }
-            const intensity = typeof data.intensity === 'number' && !isNaN(data.intensity) ? data.intensity.toFixed(2) : 'N/A';
-            return `日期: ${data.date}<br>经度: ${data.lon.toFixed(2)} °E<br>纬度: ${data.lat.toFixed(2)} °N<br>强度: ${intensity} ℃`;
+            const intensity = typeof data.value[2] === 'number' && !isNaN(data.value[2]) ? data.value[2].toFixed(2) : 'N/A';
+            return `日期: ${data.date}<br>经度: ${data.value[0].toFixed(2)} °E<br>纬度: ${data.value[1].toFixed(2)} °N<br>强度: ${intensity} ℃`;
           }
         },
         visualMap: {
@@ -656,10 +750,10 @@ export default {
             name: '质心位置与方向',
             type: 'scatter',
             data: seriesData,
-            symbol: 'path://M -5,-5 L 0,0 L -5,5 L 3,0 Z', // 更清晰的箭头形状
+            symbol: 'path://M -5,-5 L 0,0 L -5,5 L 3,0 Z',
             symbolSize: d => {
               const intensity = d.value && typeof d.value[2] === 'number' && !isNaN(d.value[2]) ? d.value[2] : 0;
-              return Math.max(intensity * 5, 10); // 确保箭头可见
+              return Math.max(intensity * 5, 10);
             },
             itemStyle: {
               opacity: 0.8
@@ -668,8 +762,8 @@ export default {
         ]
       });
 
-      // 调试：打印系列数据
-      console.log('Centroid arrow series data:', seriesData);
+      // 调试：打印初始系列数据
+      console.log('Initial centroid arrow series data:', seriesData);
     }
   }
 };
@@ -691,6 +785,28 @@ function kernelEpanechnikov(k) {
 </script>
 
 <style scoped>
+/* 新增关闭按钮样式 */
+.close-button-container {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  z-index: 1000;
+}
+
+.close-button {
+  background: transparent !important;
+  border: none;
+  color: #666;
+  font-size: 28px;
+  padding: 0 8px;
+  line-height: 1;
+  transition: color 0.2s;
+  cursor: pointer;
+}
+
+.close-button:hover {
+  color: #333;
+}
 .info-panel-content {
   padding: 1.5rem;
   color: #333333;
@@ -747,7 +863,7 @@ button {
   font-size: 16px;
   transition: background 0.2s;
   display: block;
-  margin: 0 auto 24px;
+  margin: 0 ;
 }
 
 button:hover {
@@ -792,7 +908,34 @@ button:hover {
 }
 
 .chart-card.hovmoller-charts .chart {
-  height: 300px; /* 调整高度以适应经度-纬度图 */
+  height: 300px;
+}
+
+.playback-controls {
+  margin-top: 10px;
+  text-align: center;
+}
+
+.playback-controls button {
+  display: inline-block;
+  margin: 0 5px;
+  padding: 8px 16px;
+  font-size: 14px;
+  background: #357abd;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.playback-controls button:hover {
+  background: #2a5d9c;
+}
+
+.playback-controls button:disabled {
+  background: #cccccc;
+  cursor: not-allowed;
 }
 
 p {
@@ -831,5 +974,10 @@ p {
   .chart-card.hovmoller-charts .chart {
     height: 200px;
   }
+  .playback-controls button {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
 }
 </style>
+```按照你给出的方法改进以上代码，

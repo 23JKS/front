@@ -506,97 +506,67 @@ export default {
       );
     },
     updateGlobalAnimation() {
-      if (this.isZooming || (this.map && this.map._animatingZoom)) {
-        console.log('Zoom 进行中，跳过动画更新');
-        return;
-      }
-      const convertCoords = (coords) => {
-        return coords.map(item => {
-          if (Array.isArray(item[0])) return convertCoords(item);
-          return [item[1], item[0]];
-        });
-      };
-      const calculateEventEnd = (startDate, duration) => {
-        const end = new Date(startDate);
-        end.setUTCDate(end.getUTCDate() + duration);
-        return end;
-      };
+        // Check if we've reached the end of the timeline
       if (this.currentStep >= this.maxSteps) {
-        this.resetGlobalAnimation();
+        this.pauseGlobalAnimation(); // Stop the animation when we reach the end
+        this.renderEvents();
         return;
       }
+      // if(this.c)
+      if (this.isZooming) return;
       const currentDate = this.timelineDates[this.currentStep];
-      const currentISODate = this.formatDate(currentDate);
-      this.activeLayers.forEach((layers, eventId) => {
-        const event = this.filteredEvents.find(e => e.properties.event_id === eventId);
-        if (!event) return;
-        const eventEndDate = calculateEventEnd(event.properties.start_date, event.properties.duration);
-        if (currentISODate > this.formatDate(eventEndDate)) {
-          layers.forEach(layer => {
-            if (layer._map) {
-              layer.remove();
-              console.log(`移除过期图层: ${eventId}`);
-            }
-          });
-          this.activeLayers.delete(eventId);
-        }
-      });
+      const [rangeStart, rangeEnd] = this.timeRange.map(d => new Date(d));
+      
+      if (currentDate < rangeStart || currentDate > rangeEnd) {
+        this.pauseGlobalAnimation();
+        return; // 超出范围则停止
+      }
+      // 使用 LayerGroup 管理动态图层
+      if (!this.animationLayer) {
+        this.animationLayer = L.layerGroup().addTo(this.map);
+      } else {
+        this.animationLayer.clearLayers();
+      }
+
+     
+   
+      // const currentISODate = this.formatDate(currentDate);
+
       this.filteredEvents.forEach(event => {
         const startDate = new Date(event.properties.start_date);
-        const eventEndDate = calculateEventEnd(startDate, event.properties.duration);
-        if (currentDate < startDate || currentDate > eventEndDate) return;
-        const dayInfos = event.properties.daily_info.filter(d =>
-          this.formatDate(new Date(d.date)) === currentISODate
-        );
-        if (dayInfos.length === 0) {
-          console.warn(`[${event.properties.event_id}] 无当日数据: ${currentISODate}`);
+        const eventEndDate = new Date(startDate);
+        eventEndDate.setDate(startDate.getDate() + event.properties.duration);
+        
+        // 宽松条件：只要当前日期在事件周期内，就显示最近日期的多边形
+        if (currentDate < startDate || currentDate > eventEndDate) {
+        
+          return; // 超出范围则停止
+        }
+
+        // 找到 <= 当前日期的最后一条记录
+        const dayInfo = event.properties.daily_info
+          .filter(d => new Date(d.date) <= currentDate)
+          .pop() || event.properties.daily_info[0];
+
+        if (!dayInfo?.geometry) {
+          console.warn(`[${event.id}] 无有效几何数据`);
           return;
         }
-        let allGeometries = [];
-        dayInfos.forEach(dayInfo => {
-          const geometries = this.parseMultiPolygon(dayInfo.geometry);
-          allGeometries = [...allGeometries, ...geometries];
-        });
-        if (this.activeLayers.has(event.properties.event_id)) {
-          const oldLayers = this.activeLayers.get(event.properties.event_id);
-          oldLayers.forEach(layer => {
-            if (layer._map) {
-              layer.remove();
-            }
-          });
-        }
-        const newPolygons = allGeometries.map(coords => {
-          try {
-            const latlngs = convertCoords(coords);
-            if (latlngs.flat(2).length < 6) {
-              console.warn(`[${event.properties.event_id}] 无效坐标数量`);
-              return null;
-            }
-            return L.polygon(latlngs, {
-              color: this.getSpeedColor(event.properties.speed),
-              weight: 2,
-              opacity: 0.9,
-              fillColor: this.getSpeedColor(event.properties.speed),
-              fillOpacity: 0.5,
-              className: `event-${event.properties.event_id}`
-            });
-          } catch (e) {
-            console.error(`[${event.properties.event_id}] 创建失败:`, e);
-            return null;
-          }
-        }).filter(Boolean);
-        if (newPolygons.length > 0 && this.map && !this.isZooming) {
-          newPolygons.forEach(p => p.addTo(this.map));
-          this.activeLayers.set(event.properties.event_id, newPolygons);
-          console.log(`[${event.properties.event_id}] 创建 ${newPolygons.length} 个多边形`);
-        }
+
+        // 渲染多边形
+        const polygons = this.parseMultiPolygon(dayInfo.geometry)
+          .map(coords => L.polygon(coords, {
+            color: this.getSpeedColor(event.properties.speed),
+            fillOpacity: 0.5
+          }));
+        
+        polygons.forEach(p => this.animationLayer.addLayer(p));
       });
+
+      // 更新时间轴
       this.currentStep++;
       this.progressStyle = { width: `${(this.currentStep / this.maxSteps) * 100}%` };
-      this.currentDate = this.timelineDates[this.currentStep];
-      if (this.currentStep >= this.maxSteps) {
-        this.resetGlobalAnimation();
-      }
+      this.currentDate = currentDate;
     },
     parseMultiPolygon(geometry) {
       if (!geometry?.coordinates) return [];
@@ -1104,6 +1074,7 @@ export default {
 <style scoped>
 /* 信息面板样式保持不变 */
 .info-panel-wrapper {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
   position: fixed;
   right: 0;
   top: 0;
